@@ -4,6 +4,8 @@ from bcc import BPF
 import ctypes as ct
 import socket
 import struct
+import psutil
+from datetime import datetime
 
 FLAG_SUBMIT = 0x00000001  # push, urgent, debug, submit to userspace immediately.
 FLAG_DELAY = 0x00000002  # the name will be assigned when return.
@@ -201,13 +203,14 @@ stt = {
     stt_key(24, SYS_CALL_OPEN, O_NOFOLLOW | O_RDWR | O_CREAT | O_EXCL): stt_val(0, 0, 25),
     stt_key(24, SYS_CALL_OPEN, 0o100302): stt_val(0, 0, 25),  # for arm chip
     stt_key(25, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_MAYOR | FLAG_DELAY, 0, 26),
-    stt_key(26, SYS_CALL_OPEN, O_WRONLY | O_CREAT): stt_val(FLAGS_CLR_MAY | FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, 0, 27),
+    stt_key(26, SYS_CALL_OPEN, O_WRONLY | O_CREAT): stt_val(FLAGS_CLR_MAY | FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, 0,
+                                                            27),
     stt_key(27, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_CREATE, STATE_VI),
     stt_key(27, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_WRITE, STATE_VI),
     stt_key(26, SYS_CALL_OPEN, O_NOFOLLOW | O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_FINAL, OP_READ, STATE_VI),
     stt_key(26, SYS_CALL_OPEN, 0o100301): stt_val(FLAG_FINAL, OP_READ, STATE_VI),  # for arm chip
     stt_key(STATE_VI, SYS_CALL_OPEN, O_WRONLY | O_CREAT):
-        stt_val(FLAG_DELAY | FLAG_MINOR | FLAG_FINAL | FLAGS_CLR_MAY, OP_SAVE_PRI, STATE_VI),
+        stt_val(FLAG_DELAY | FLAG_MINOR | FLAG_FINAL, OP_SAVE_PRI, STATE_VI),
 }
 
 
@@ -339,6 +342,7 @@ def get_behavior(OP: int) -> str:
 
 
 __DEBUG__ = False
+boot_time = psutil.boot_time()
 
 # debug version which prints the log on the screen.
 file_info = """{:<6} {:<6} {:<5} \033[0;33;40m{:<6}\033[0m {:<6} {:<16} {:<16} {:<8} {:<8} {:<8} {} {:X}"""
@@ -347,6 +351,7 @@ net_info = """{:<6} {:<6} {:<5} \033[0;32;40m{:<6}\033[0m {:<6} {:<21} {:<16} {:
 
 class LogItem:
     def __init__(self):
+        self.time = None
         self.src = list()
         self.task = None
         self.dest = None
@@ -375,6 +380,7 @@ def print_event(cpu, data, size):
         if not log:
             log = LogItem()
             tmp_log.update({pid: log})
+            log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9)).replace(" ", ".")
             log.task = "{}({},{},{},{})".format(event.comm.decode(), event.ppid, event.pid, event.uid,
                                                 get_behavior(event.s.fr.operate))
         if event.f0.i_ino:
@@ -383,15 +389,20 @@ def print_event(cpu, data, size):
             log.src.append("None")
         if (event.s.fr.operate & 0x7f) < OP_LOGIN:
             if event.f1.i_ino != 0:
-                log.dest = "{}({})".format(event.f1.i_ino, event.f1.name.decode())
+                # strip in case "./name1"
+                log.dest = "{}({})".format(event.f1.i_ino, event.f1.name.decode().replace(r"./", ""))
         else:
             log.dest = "{}:{}".format(socket.inet_ntoa(struct.pack('I', event.net.addr)), socket.ntohs(event.net.port))
         if event.s.fr.state & 0x8000 or log.dest:
             for src in log.src:
-                logs.append("{} {} {}\n".format(src, log.task, log.dest))
+                tmp = " {} {} {}\n".format(src, log.task, log.dest)
+                if len(logs) and logs[-1] == tmp:
+                    continue
+                logs.append(log.time)
+                logs.append(tmp)
             del tmp_log[pid]
             del log
-            if len(logs) >= 166666:
+            if len(logs) >= 13618:
                 log_file.writelines(logs)
                 log_file.flush()  # write into the disk
                 logs.clear()

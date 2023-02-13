@@ -15,7 +15,7 @@ carac = pd.DataFrame(None, columns=['ID', 'myvalue'])
 with open("panorama.log", "r") as f:
     line = f.readline()[:-1]
     while line:
-        src, task, dst = line.split()
+        _, src, task, dst = line.split()
         if src != "None":
             df = df.append([{'from': src, 'to': task}], ignore_index=True)
             carac = carac.append([{'ID': src, 'myvalue': 'file'}], ignore_index=True)
