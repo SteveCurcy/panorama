@@ -5,7 +5,8 @@ import ctypes as ct
 import socket
 import struct
 import psutil
-from datetime import datetime
+from datetime import datetime, timedelta
+from threading import Timer, Lock
 
 FLAG_SUBMIT = 0x00000001  # push, urgent, debug, submit to userspace immediately.
 FLAG_DELAY = 0x00000002  # the name will be assigned when return.
@@ -341,6 +342,12 @@ def get_behavior(OP: int) -> str:
         return "other"
 
 
+usr = dict()
+with open("/etc/passwd") as f:
+    for line in f:
+        args = line.split(":")
+        usr.update({int(args[2]): args[0]})
+
 __DEBUG__ = False
 boot_time = psutil.boot_time()
 
@@ -359,7 +366,26 @@ class LogItem:
 
 tmp_log = dict()  # pid -> LogItem
 logs = list()  # list of logs
-log_file = open("panorama.log", "a")
+lock = Lock()
+dt = datetime.now().date()
+log_file = open("{}-{}-{}.log".format(dt.year, dt.month, dt.day), "w")
+
+
+def log_switch():
+    global log_file, timer
+    date = datetime.now().date()
+    with lock:
+        log_file.close()
+        log_file = open("{}-{}-{}.log".format(date.year, date.month, date.day), "w")
+    timer = Timer(86400, log_switch)
+    timer.start()
+
+
+# get the next day's datetime
+next_time = dt + timedelta(days=+1)
+next_time = datetime(next_time.year, next_time.month, next_time.day, 3, 0, 0)
+timer = Timer((next_time - datetime.now()).total_seconds(), log_switch)
+timer.start()
 
 
 def print_event(cpu, data, size):
@@ -380,17 +406,17 @@ def print_event(cpu, data, size):
         if not log:
             log = LogItem()
             tmp_log.update({pid: log})
-            log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9)).replace(" ", ".")
-            log.task = "{}({},{},{},{})".format(event.comm.decode(), event.ppid, event.pid, event.uid,
-                                                get_behavior(event.s.fr.operate))
+            log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9).time())
+            log.task = "{}({},{},{})".format(event.comm.decode(), event.pid, usr[event.uid],
+                                             get_behavior(event.s.fr.operate))
         if event.f0.i_ino:
-            log.src.append("{}({})".format(event.f0.i_ino, event.f0.name.decode()))
+            log.src.append("{}({})".format(event.f0.name.decode().replace(r"./", ""), event.f0.i_ino))
         else:
             log.src.append("None")
         if (event.s.fr.operate & 0x7f) < OP_LOGIN:
             if event.f1.i_ino != 0:
                 # strip in case "./name1"
-                log.dest = "{}({})".format(event.f1.i_ino, event.f1.name.decode().replace(r"./", ""))
+                log.dest = "{}({})".format(event.f1.name.decode().replace(r"./", ""), event.f1.i_ino)
         else:
             log.dest = "{}:{}".format(socket.inet_ntoa(struct.pack('I', event.net.addr)), socket.ntohs(event.net.port))
         if event.s.fr.state & 0x8000 or log.dest:
@@ -403,8 +429,9 @@ def print_event(cpu, data, size):
             del tmp_log[pid]
             del log
             if len(logs) >= 13618:
-                log_file.writelines(logs)
-                log_file.flush()  # write into the disk
+                with lock:
+                    log_file.writelines(logs)
+                    log_file.flush()  # write into the disk
                 logs.clear()
 
 
@@ -418,6 +445,7 @@ while True:
         b.perf_buffer_poll()
     except KeyboardInterrupt:
         print()
+        timer.cancel()
         if len(logs):
             log_file.writelines(logs)
         log_file.close()

@@ -6,13 +6,18 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
+import sys
+
+if len(sys.argv) <= 1:
+    print("[Error] No file pointed.")
+    exit(0)
  
 # Build a dataframe with your connections
 df = pd.DataFrame(None, columns=['from', 'to'])
 # And a data frame with characteristics for your nodes
 carac = pd.DataFrame(None, columns=['ID', 'myvalue'])
 
-with open("panorama.log", "r") as f:
+with open(sys.argv[1], "r") as f:
     line = f.readline()[:-1]
     while line:
         _, src, task, dst = line.split()

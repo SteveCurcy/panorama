@@ -1,22 +1,27 @@
 #!/usr/bin/env python
+import sys
 
-nodes = []
+nodes = set()
 edges = []
 
-with open("panorama.log", "r") as f:
+if len(sys.argv) <= 1:
+    print("[Error] No file pointed.")
+    exit(0)
+
+with open(sys.argv[1], "r") as f:
     line = f.readline()[:-1]
     while line:
-        _, src, task, dst = line.split()
+        time, src, task, dst = line.split()
         if src != "None":
-            nodes.append(src)
-            edges.append("{} {}".format(src, task))
+            nodes.add(src + "\n")
+            edges.append("{} {} {}\n".format(src, task, time))
         if dst != "None":
-            nodes.append(dst)
-            edges.append("{} {}".format(task, dst))
-        nodes.append(task)
+            nodes.add(dst + "\n")
+            edges.append("{} {} {}\n".format(task, dst, time))
+        nodes.add(task + "\n")
         line = f.readline()[:-1]
 
-for node in nodes:
-    print(node)
-for edge in edges:
-    print(edge)
+
+with open("graph_status.txt", "w") as f:
+    f.writelines(nodes)
+    f.writelines(edges)

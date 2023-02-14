@@ -163,12 +163,14 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args, const ch
     if (CHECK_FLAG(*state, FLAGS_CLR_MAY)) {
         cur->f0.fd = -1;
         cur->f0.i_ino = 0;
-        bpf_probe_read(&cur->f0.name, 32, NULL);
+        cur->f0.name[0] = '\0';
+//        bpf_probe_read(&cur->f0.name, 32, NULL);
     }
     if (CHECK_FLAG(*state, FLAGS_CLR_MIN)) {
         cur->f1.fd = -1;
         cur->f1.i_ino = 0;
-        bpf_probe_read(&cur->f1.name, 32, NULL);
+        cur->f1.name[0] = '\0';
+//        bpf_probe_read(&cur->f1.name, 32, NULL);
     }
 
     /* submit the event now? */
@@ -204,12 +206,14 @@ __always_inline static int do_return(struct pt_regs *ctx) {
     /* copy filename now if `delay` flag was set */
     if (CHECK_FLAG(cur->s.for_assign, FLAGS_DELAY)) {
         if (name0) {
-            if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR))
+            if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR)) {
                 bpf_probe_read_user_str(&cur->f0.name, 32, *name0);
+            }
         }
         if (name1) {
-            if (CHECK_FLAG(cur->s.for_assign, FLAGS_MINOR))
+            if (CHECK_FLAG(cur->s.for_assign, FLAGS_MINOR)) {
                 bpf_probe_read_user_str(&cur->f1.name, 32, *name1);
+            }
         }
     }
 
