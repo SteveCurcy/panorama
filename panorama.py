@@ -53,20 +53,20 @@ OP_LOGIN_PRI = 0x8c
 OP_UPLOAD_PRI = 0x8d
 
 STATE_START = 0x0000
-STATE_TOUCH = 0x8000
-STATE_RM = 0x8001
-STATE_MKDIR = 0x8002
-STATE_RMDIR = 0x8003
-STATE_CAT = 0x8004
-STATE_MV = 0x8005
-STATE_CP = 0x8006
-STATE_GZIP = 0x8007
-STATE_ZIP = 0x8008
-STATE_UNZIP = 0x8009
-STATE_SPLIT = 0x800a
-STATE_VI = 0x800b
-STATE_SSH = 0x800c
-STATE_SCP = 0x800d
+STATE_TOUCH = 0x8000    # dest output
+STATE_RM = 0x8001       # src output
+STATE_MKDIR = 0x8002    # dest output
+STATE_RMDIR = 0x8003    # src output
+STATE_CAT = 0x8004      # src output
+STATE_MV = 0x8005       # dest output
+STATE_CP = 0x8006       # dest output
+STATE_GZIP = 0x8007     # dest output   unlink src
+STATE_ZIP = 0x8008      # multi src dest output
+STATE_UNZIP = 0x8009    # dest output
+STATE_SPLIT = 0x800a    # dest output
+STATE_VI = 0x800b       # dest output
+STATE_SSH = 0x800c      # dest output
+STATE_SCP = 0x800d      # dest output
 
 SYS_CALL_OPEN = 0x00
 SYS_CALL_OPENAT = 0x01
@@ -191,9 +191,9 @@ stt = {
     stt_key(STATE_UNZIP, SYS_CALL_OPEN, O_RDWR | O_CREAT | O_TRUNC): stt_val(
         FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY | FLAGS_LST_SMT | FLAG_FINAL, 0, STATE_UNZIP),
     # cp
-    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, OP_CREATE,
-                                                                    21),
-    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_TRUNC): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, OP_COVER, 22),
+    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY,
+                                                                    OP_CREATE_PRI, 21),
+    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_TRUNC): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, OP_COVER_PRI, 22),
     stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 23),
     stt_key(22, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 23),
     stt_key(23, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAG_FINAL, 0, STATE_CP),
@@ -360,7 +360,9 @@ class LogItem:
     def __init__(self):
         self.time = None
         self.src = list()
+        self.fm = None
         self.task = None
+        self.to = None
         self.dest = None
 
 
@@ -404,24 +406,32 @@ def print_event(cpu, data, size):
         pid = int(event.pid)
         log = tmp_log.get(pid)
         if not log:
+            task = event.comm.decode()
             log = LogItem()
             tmp_log.update({pid: log})
             log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9).time())
-            log.task = "{}({},{},{})".format(event.comm.decode(), event.pid, usr[event.uid],
-                                             get_behavior(event.s.fr.operate))
-        if event.f0.i_ino:
-            log.src.append("{}({})".format(event.f0.name.decode().replace(r"./", ""), event.f0.i_ino))
-        else:
-            log.src.append("None")
+            log.task = "{}({},{})".format(task, event.pid, usr[event.uid])
+            if task == "gzip":
+                log.fm = "remove"
         if (event.s.fr.operate & 0x7f) < OP_LOGIN:
             if event.f1.i_ino != 0:
                 # strip in case "./name1"
                 log.dest = "{}({})".format(event.f1.name.decode().replace(r"./", ""), event.f1.i_ino)
+                log.to = get_behavior(event.s.fr.operate)
         else:
             log.dest = "{}:{}".format(socket.inet_ntoa(struct.pack('I', event.net.addr)), socket.ntohs(event.net.port))
+            log.to = get_behavior(event.s.fr.operate)
+        if event.f0.i_ino:
+            log.src.append("{}({})".format(event.f0.name.decode().replace(r"./", ""), event.f0.i_ino))
+            if not log.fm:
+                log.fm = "read"
+        else:
+            log.src.append(None)
         if event.s.fr.state & 0x8000 or log.dest:
+            if not log.dest:
+                log.fm = get_behavior(event.s.fr.operate)
             for src in log.src:
-                tmp = " {} {} {}\n".format(src, log.task, log.dest)
+                tmp = " {} {} {} {} {}\n".format(src, log.fm, log.task, log.to, log.dest)
                 if len(logs) and logs[-1] == tmp:
                     continue
                 logs.append(log.time)

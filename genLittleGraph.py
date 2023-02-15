@@ -11,13 +11,13 @@ if len(sys.argv) <= 1:
 with open(sys.argv[1], "r") as f:
     line = f.readline()[:-1]
     while line:
-        time, src, task, dst = line.split()
+        time, src, fm, task, to, dst = line.split()
         if src != "None":
             nodes.add(src + "\n")
-            edges.append("{} {} {}\n".format(src, task, time))
+            edges.append("{} {} {}.{}\n".format(src, task, time, fm))
         if dst != "None":
             nodes.add(dst + "\n")
-            edges.append("{} {} {}\n".format(task, dst, time))
+            edges.append("{} {} {}.{}\n".format(task, dst, time, to))
         nodes.add(task + "\n")
         line = f.readline()[:-1]
 

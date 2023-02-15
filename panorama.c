@@ -117,6 +117,7 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args, const ch
             *state : (cur->s.fr.operate ? (cur->s.for_assign & 0x0000000000ff0000) |
                                           (*state & 0xffffffffff00ffff) : *state);
 
+//    if (cur->s.fr.state == 21)
 //    behavior.perf_submit(ctx, cur, sizeof(*cur));
     /* net info assignment */
     if (CHECK_FLAG(*state, FLAGS_NET)) {
