@@ -410,7 +410,7 @@ def print_event(cpu, data, size):
             log = LogItem()
             tmp_log.update({pid: log})
             log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9).time())
-            log.task = "{}({},{})".format(task, event.pid, usr[event.uid])
+            log.task = "{}({})".format(task, usr[event.uid])
             if task == "gzip":
                 log.fm = "remove"
         if (event.s.fr.operate & 0x7f) < OP_LOGIN:
