@@ -131,7 +131,7 @@ stt = {
     stt_key(STATE_START, SYS_CALL_OPENAT, 0o4501): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 17),
     stt_key(17, SYS_CALL_DUP3, ARGS_EQL_DST): stt_val(FLAG_MIN_FD, 0, 13),
     stt_key(13, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_CREATE, STATE_TOUCH),
-    stt_key(STATE_TOUCH, SYS_CALL_OPENAT, 0o4501): stt_val(FLAGS_SMT_LST, 0, 13),
+    stt_key(STATE_TOUCH, SYS_CALL_OPENAT, 0o4501): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAGS_SMT_LST, 0, 13),
     # gzip
     stt_key(STATE_START, SYS_CALL_OPENAT, 0o40000): stt_val(0, 0, 5),
     stt_key(5, SYS_CALL_OPENAT, 0o104400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for arm
@@ -189,7 +189,7 @@ stt = {
     stt_key(1, SYS_CALL_OPENAT, 0o1001): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_COVER_PRI, 39),
     stt_key(38, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
     stt_key(39, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
-    stt_key(STATE_CP, SYS_CALL_OPENAT, 0): stt_val(FLAGS_SMT_LST, 0, 1),
+    stt_key(STATE_CP, SYS_CALL_OPENAT, 0): stt_val(FLAGS_SMT_LST | FLAG_MAY_FD | FLAG_MAYOR, 0, 1),
 }
 
 
@@ -271,12 +271,12 @@ b.attach_kretprobe(event=b.get_syscall_fnname("dup3"), fn_name="syscall__dup3_re
 b.attach_kretprobe(event=b.get_syscall_fnname("socket"), fn_name="syscall__socket_return")
 b.attach_kretprobe(event=b.get_syscall_fnname("connect"), fn_name="syscall__connect_return")
 
-# b.attach_kprobe(event="vfs_open", fn_name="do_vfs_open")
-# b.attach_kprobe(event="vfs_unlink", fn_name="do_vfs_unlink")
-# b.attach_kprobe(event="vfs_rename", fn_name="do_vfs_rename")
-# b.attach_kprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir")
-# b.attach_kprobe(event="vfs_rmdir", fn_name="do_vfs_rmdir")
-# b.attach_kretprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir_return")
+b.attach_kprobe(event="vfs_open", fn_name="do_vfs_open")
+b.attach_kprobe(event="vfs_unlink", fn_name="do_vfs_unlink")
+b.attach_kprobe(event="vfs_rename", fn_name="do_vfs_rename")
+b.attach_kprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir")
+b.attach_kprobe(event="vfs_rmdir", fn_name="do_vfs_rmdir")
+b.attach_kretprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir_return")
 
 mp = b["stt_behav"]
 for key, val in stt.items():

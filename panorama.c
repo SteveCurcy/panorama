@@ -17,8 +17,6 @@
 BPF_HASH(stt_behav, u64, u64, 4096);  // the first layer state transition table
 BPF_HASH(state_behav, u32, struct behav_t, 4096);  // pid -> data
 BPF_HASH(next_state, u32, struct behav_t, 4096);
-BPF_HASH(delay0, u32, const char*, 512);
-BPF_HASH(delay1, u32, const char*, 512);
 /* the temporary variables' size can be set as 1,
  * but set as 32 for multithreading concurrency */
 BPF_HASH(tmp_dentry, u32, struct dentry*, 32);
@@ -337,7 +335,7 @@ int syscall_exit_group(struct pt_regs *ctx, int sig) {
 
 int do_vfs_open(struct pt_regs *ctx, const struct path *path, struct file *file) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
 
     if (!cur) return 0;
     if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR) || CHECK_FLAG(cur->s.for_assign, FLAGS_MAY_FD)) {
@@ -352,7 +350,7 @@ int do_vfs_open(struct pt_regs *ctx, const struct path *path, struct file *file)
 int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct inode *dir,
                   struct dentry *dentry, struct inode **delegated_inode) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
 
     if (!cur) return 0;
     if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR) || CHECK_FLAG(cur->s.for_assign, FLAGS_MAY_FD)) {
@@ -369,7 +367,7 @@ int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct
  * same in the same disk */
 int do_vfs_rename(struct pt_regs *ctx, struct renamedata *rd) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
 
     if (!cur) return 0;
     if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR) || CHECK_FLAG(cur->s.for_assign, FLAGS_MAY_FD)) {
@@ -385,7 +383,7 @@ int do_vfs_rename(struct pt_regs *ctx, struct renamedata *rd) {
 int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
         struct inode *dir, struct dentry *dentry, umode_t mode) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
 
     if (!cur) return 0;
     tmp_dentry.update(&pid, &dentry);
@@ -395,7 +393,7 @@ int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
 
 int do_vfs_mkdir_return(struct pt_regs *ctx) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
     struct dentry **tmp = tmp_dentry.lookup(&pid);
 
     /* delete that tmp variable at first */
@@ -413,7 +411,7 @@ int do_vfs_mkdir_return(struct pt_regs *ctx) {
 int do_vfs_rmdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
         struct inode *dir, struct dentry *dentry) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
-    struct behav_t *cur = state_behav.lookup(&pid);
+    struct behav_t *cur = next_state.lookup(&pid);
 
     if (!cur) return 0;
     if (CHECK_FLAG(cur->s.for_assign, FLAGS_MAYOR) || CHECK_FLAG(cur->s.for_assign, FLAGS_MAY_FD)) {
