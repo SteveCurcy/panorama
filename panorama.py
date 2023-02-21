@@ -135,7 +135,7 @@ stt = {
     # gzip
     stt_key(STATE_START, SYS_CALL_OPENAT, 0o40000): stt_val(0, 0, 5),
     stt_key(5, SYS_CALL_OPENAT, 0o104400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for arm
-    stt_key(5, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for intel
+    # stt_key(5, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for intel
     stt_key(6, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_COMPR_PRI, 7),
     stt_key(7, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 8),
     stt_key(8, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(0, 0, 9),
@@ -143,7 +143,7 @@ stt = {
     stt_key(10, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 11),
     stt_key(11, SYS_CALL_UNLINKAT, 0): stt_val(FLAGS_SMT_EXT, 0, STATE_GZIP),
     stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o104400): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 6),
-    stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 6),
+    # stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 6),
     stt_key(6, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, OP_UNZIP_PRI, 12),
     stt_key(12, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 9),
     # zip create
@@ -190,6 +190,21 @@ stt = {
     stt_key(38, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
     stt_key(39, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
     stt_key(STATE_CP, SYS_CALL_OPENAT, 0): stt_val(FLAGS_SMT_LST | FLAG_MAY_FD | FLAG_MAYOR, 0, 1),
+    # vim
+    stt_key(1, SYS_CALL_OPENAT, 0): stt_val(0, 0, 14),
+    stt_key(30, SYS_CALL_OPENAT, 0): stt_val(0, 0, 14),
+    stt_key(14, SYS_CALL_OPENAT, 0o4000): stt_val(0, 0, 15),
+    stt_key(15, SYS_CALL_OPENAT, 0o2044000): stt_val(0, 0, 16),
+    stt_key(16, SYS_CALL_SOCKET, stt_net(AF_UNIX, 0o2004001)): stt_val(0, 0, 25),
+    stt_key(25, SYS_CALL_OPENAT, 0o100302): stt_val(0, 0, 40),  # for intel
+    stt_key(25, SYS_CALL_OPENAT, 0o400302): stt_val(0, 0, 40),  # for arm
+    stt_key(40, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR, 0, 41),
+    stt_key(41, SYS_CALL_OPENAT, 0o100301): stt_val(FLAGS_SMT_EXT, OP_READ, STATE_VI),  # for intel
+    stt_key(41, SYS_CALL_OPENAT, 0o400301): stt_val(FLAGS_SMT_EXT, OP_READ, STATE_VI),  # for arm
+    stt_key(STATE_VI, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_MINOR | FLAGS_SMT_EXT, OP_SAVE_PRI, STATE_VI),
+    stt_key(41, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAGS_CLR_MAY, 0, 42),
+    stt_key(42, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_WRITE, STATE_VI),
+    stt_key(42, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_CREATE, STATE_VI),
 }
 
 
