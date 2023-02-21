@@ -8,22 +8,19 @@ import psutil
 from datetime import datetime, timedelta
 from threading import Timer, Lock
 
-FLAG_SUBMIT = 0x00000001  # push, urgent, debug, submit to userspace immediately.
-FLAG_DELAY = 0x00000002  # the name will be assigned when return.
-FLAG_MAYOR = 0x00000004  # get mayor name from args.
-FLAG_MINOR = 0x00000008  # get minor name from args.
-FLAG_MAY_FD = 0x00000010  # get mayor fd.
-FLAG_MIN_FD = 0x00000020  # get minor fd.
-FLAG_NET_FD = 0x00000040  # get socket fd.
-FLAG_NET = 0x00000080  # get the address and port.
-FLAG_PARENT = 0x00000100  # copy the address and port to parent data.
-FLAG_FINAL = 0x00000200  # if this event be memoized in `exit()`
-FLAGS_NEXT = 0x00000400
-FLAGS_COM_IO = 0x00000800
-FLAGS_CLR_MAY = 0x00001000
-FLAGS_CLR_MIN = 0x00002000
-FLAGS_DLY_SMT = 0x00004000
-FLAGS_LST_SMT = 0x00008000
+FLAG_MAYOR = 0x00000001  # get mayor name from args.
+FLAG_MINOR = 0x00000002  # get minor name from args.
+FLAG_NET = 0x00000004  # get the address and port.
+FLAG_MAY_FD = 0x00000008  # get mayor fd.
+FLAG_MIN_FD = 0x00000010  # get minor fd.
+FLAG_NET_FD = 0x00000020  # get socket fd.
+FLAG_PARENT = 0x00000040  # copy the address and port to parent data.
+FLAGS_CLR_MAY = 0x00000080
+FLAGS_CLR_MIN = 0x00000100
+FLAGS_SMT_CUR = 0x00000200
+FLAGS_SMT_LST = 0x00000400
+FLAGS_SMT_EXT = 0x00000800
+FLAGS_NEXT = 0x00001000
 
 OP_CREATE = 0x01
 OP_REMOVE = 0x02
@@ -68,21 +65,18 @@ STATE_VI = 0x800b       # dest output
 STATE_SSH = 0x800c      # dest output
 STATE_SCP = 0x800d      # dest output
 
-SYS_CALL_OPEN = 0x00
-SYS_CALL_OPENAT = 0x01
-SYS_CALL_DUP2 = 0x02
-SYS_CALL_RENAME = 0x03
-SYS_CALL_RENAMEAT2 = 0x04
-SYS_CALL_READ = 0x05
-SYS_CALL_WRITE = 0x06
-SYS_CALL_CLOSE = 0x07
-SYS_CALL_UNLINK = 0x08
-SYS_CALL_UNLINKAT = 0x09
-SYS_CALL_MKDIR = 0x0a
-SYS_CALL_RMDIR = 0x0b
-SYS_CALL_EXIT = 0x0c
-SYS_CALL_SOCKET = 0x0d
-SYS_CALL_CONNECT = 0x0e
+SYS_CALL_OPENAT = 0x00
+SYS_CALL_DUP3 = 0x01
+SYS_CALL_RENAMEAT = 0x02
+SYS_CALL_RENAMEAT2 = 0x03
+SYS_CALL_READ = 0x04
+SYS_CALL_WRITE = 0x05
+SYS_CALL_CLOSE = 0x06
+SYS_CALL_UNLINKAT = 0x07
+SYS_CALL_MKDIRAT = 0x08
+SYS_CALL_EXIT_GROUP = 0x09
+SYS_CALL_SOCKET = 0x0a
+SYS_CALL_CONNECT = 0x0b
 
 ARGS_EQL_SRC = 0x0000000001
 ARGS_EQL_DST = 0x0000000002
@@ -118,100 +112,84 @@ def stt_val(flag: int, op: int, state: int) -> int:
 
 stt = {
     # cat
-    stt_key(STATE_START, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD, 0, 1),
-    stt_key(1, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(FLAGS_NEXT | FLAGS_COM_IO, 0, 2),
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 1),
+    stt_key(1, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAGS_CLR_MAY, 0, STATE_START),
+    stt_key(1, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 2),
     stt_key(2, SYS_CALL_WRITE, ARGS_EQL_IO): stt_val(0, 0, 3),
-    stt_key(3, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAG_FINAL, OP_READ, STATE_CAT),
-    # gzip for multiple files
-    stt_key(STATE_START, SYS_CALL_OPENAT, O_NOCTTY | O_NONBLOCK | O_NOFOLLOW):  # this for intel
-        stt_val(FLAGS_NEXT | FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD, 0, 4),
-    stt_key(STATE_START, SYS_CALL_OPENAT, 0o104400):  # this item is for arm (M2 chip)
-        stt_val(FLAGS_NEXT | FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD, 0, 4),
-    stt_key(STATE_GZIP, SYS_CALL_OPENAT, O_NOCTTY | O_NONBLOCK | O_NOFOLLOW):  # this for intel
-        stt_val(FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD | FLAG_SUBMIT, 0, 4),
-    stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o104400):  # this item is for arm
-        stt_val(FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD | FLAG_SUBMIT, 0, 4),
-    stt_key(4, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, OP_UNZIP, 6),
-    stt_key(4, SYS_CALL_OPENAT, O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_MINOR | FLAG_DELAY, OP_COMPR, 5),
-    stt_key(6, SYS_CALL_OPENAT, O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_MINOR | FLAG_DELAY, 0, 7),
-    stt_key(5, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_FINAL, 0, STATE_GZIP),
-    stt_key(7, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_FINAL, 0, STATE_GZIP),
-    # mkdir and rmdir some directories
-    stt_key(STATE_START, SYS_CALL_MKDIR, 0): stt_val(FLAG_MINOR | FLAGS_DLY_SMT, OP_MKDIR, STATE_MKDIR),
-    stt_key(STATE_MKDIR, SYS_CALL_MKDIR, 0): stt_val(FLAG_MINOR | FLAGS_DLY_SMT, OP_MKDIR, STATE_MKDIR),
-    stt_key(STATE_START, SYS_CALL_RMDIR, 0): stt_val(FLAG_MAYOR | FLAGS_DLY_SMT, OP_RMDIR, STATE_RMDIR),
-    stt_key(STATE_RMDIR, SYS_CALL_RMDIR, 0): stt_val(FLAG_MAYOR | FLAGS_DLY_SMT, OP_RMDIR, STATE_RMDIR),
-    # rm files
-    stt_key(STATE_START, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_MAYOR | FLAGS_DLY_SMT, OP_REMOVE, STATE_RM),
-    stt_key(STATE_RM, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_MAYOR | FLAGS_DLY_SMT, OP_REMOVE, STATE_RM),
-    # split
-    stt_key(1, SYS_CALL_DUP2, ARGS_EQL_SRC): stt_val(FLAG_MAY_FD, 0, 8),
-    stt_key(8, SYS_CALL_OPEN, O_CREAT | O_WRONLY): stt_val(FLAG_MIN_FD | FLAG_MINOR | FLAG_DELAY, 0, 9),
-    stt_key(9, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_SPLIT, STATE_SPLIT),
-    stt_key(STATE_SPLIT, SYS_CALL_OPEN, O_CREAT | O_WRONLY):
-        stt_val(FLAG_SUBMIT | FLAG_MIN_FD | FLAG_MINOR | FLAG_DELAY, 0, 9),
+    stt_key(3, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAGS_SMT_EXT, OP_READ, STATE_CAT),
+    stt_key(STATE_CAT, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 1),
+    # mkdir
+    stt_key(STATE_START, SYS_CALL_MKDIRAT, 0): stt_val(FLAG_MINOR | FLAGS_SMT_EXT, OP_MKDIR, STATE_MKDIR),
+    stt_key(STATE_MKDIR, SYS_CALL_MKDIRAT, 0): stt_val(FLAG_MINOR | FLAGS_SMT_EXT | FLAGS_SMT_LST, OP_MKDIR, STATE_MKDIR),
+    # rmdir
+    stt_key(STATE_START, SYS_CALL_UNLINKAT, 0o1000): stt_val(FLAG_MAYOR | FLAGS_SMT_EXT, OP_RMDIR, STATE_RMDIR),
+    stt_key(STATE_RMDIR, SYS_CALL_UNLINKAT, 0o1000): stt_val(FLAG_MAYOR | FLAGS_SMT_EXT | FLAGS_SMT_LST, OP_RMDIR, STATE_RMDIR),
+    # rm
+    stt_key(STATE_START, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_MAYOR | FLAGS_SMT_EXT, OP_REMOVE, STATE_RM),
+    stt_key(STATE_RM, SYS_CALL_UNLINKAT, 0): stt_val(FLAG_MAYOR | FLAGS_SMT_EXT | FLAGS_SMT_LST, OP_REMOVE, STATE_RM),
     # touch
-    stt_key(STATE_START, SYS_CALL_OPEN, O_NONBLOCK | O_NOCTTY | O_CREAT | O_WRONLY):
-        stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, 0, 10),
-    stt_key(STATE_TOUCH, SYS_CALL_OPEN, O_NONBLOCK | O_NOCTTY | O_CREAT | O_WRONLY):
-        stt_val(FLAGS_LST_SMT | FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, 0, 10),
-    stt_key(10, SYS_CALL_DUP2, ARGS_EQL_DST): stt_val(FLAG_MIN_FD, 0, 11),
-    stt_key(10, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_CREATE, STATE_TOUCH),
-    stt_key(11, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_CREATE, STATE_TOUCH),
-    # ssh and scp
-    stt_key(STATE_START, SYS_CALL_SOCKET, stt_net(AF_UNIX, SOCK_CLOEXEC | SOCK_NONBLOCK | SOCK_STREAM)):
-        stt_val(FLAGS_CLR_MAY, 0, 12),
-    stt_key(12, SYS_CALL_SOCKET, stt_net(AF_INET, SOCK_STREAM)): stt_val(FLAG_NET_FD, 0, 13),
-    stt_key(13, SYS_CALL_CONNECT, ARGS_EQL_NET): stt_val(FLAG_NET | FLAG_PARENT, 0, 14),
-    stt_key(14, SYS_CALL_CLOSE, ARGS_EQL_NET): stt_val(FLAG_FINAL, OP_LOGIN, STATE_SSH),
-    stt_key(14, SYS_CALL_OPEN, O_NONBLOCK): stt_val(FLAG_MAY_FD | FLAG_MAYOR | FLAG_DELAY, 0, 15),
-    stt_key(STATE_SCP, SYS_CALL_OPEN, O_NONBLOCK): stt_val(FLAG_SUBMIT | FLAG_MAY_FD | FLAG_MAYOR | FLAG_DELAY, 0, 15),
-    stt_key(15, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAG_FINAL, OP_UPLOAD, STATE_SCP),
-    # mv
-    stt_key(STATE_START, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_DELAY | FLAG_MAYOR | FLAG_MINOR | FLAG_FINAL, OP_CREATE,
-                                                         STATE_MV),
-    stt_key(STATE_MV, SYS_CALL_RENAMEAT2, 0): stt_val(FLAGS_LST_SMT | FLAG_DELAY | FLAG_MAYOR | FLAG_MINOR | FLAG_FINAL,
-                                                      OP_CREATE_PRI, STATE_MV),
-    stt_key(STATE_MV, SYS_CALL_RENAME, 0): stt_val(FLAG_DELAY | FLAG_MAYOR | FLAG_MINOR | FLAG_FINAL, OP_COVER_PRI,
-                                                   STATE_MV),
-    # zip
-    stt_key(1, SYS_CALL_OPEN, O_TRUNC | O_CREAT | O_WRONLY): stt_val(0, OP_CREATE, 16),
-    stt_key(1, SYS_CALL_OPEN, O_RDONLY): stt_val(0, 0, 20),
-    stt_key(20, SYS_CALL_OPEN, O_RDWR): stt_val(0, OP_COVER, 16),
-    stt_key(16, SYS_CALL_OPEN, O_RDWR | O_CREAT | O_EXCL): stt_val(0, 0, 17),
-    stt_key(17, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_MAYOR | FLAG_DELAY | FLAG_MAY_FD, 0, 18),
-    stt_key(18, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(0, 0, 19),
-    stt_key(18, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_MAYOR | FLAG_DELAY | FLAG_MAY_FD, 0, 18),
-    stt_key(19, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_SUBMIT | FLAG_MAYOR | FLAG_DELAY | FLAG_MAY_FD, 0, 18),
-    stt_key(19, SYS_CALL_RENAME, 0): stt_val(FLAG_MINOR | FLAG_FINAL, 0, STATE_ZIP),
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0o4501): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 17),
+    stt_key(17, SYS_CALL_DUP3, ARGS_EQL_DST): stt_val(FLAG_MIN_FD, 0, 13),
+    stt_key(13, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_CREATE, STATE_TOUCH),
+    stt_key(STATE_TOUCH, SYS_CALL_OPENAT, 0o4501): stt_val(FLAGS_SMT_LST, 0, 13),
+    # gzip
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0o40000): stt_val(0, 0, 5),
+    stt_key(5, SYS_CALL_OPENAT, 0o104400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for arm
+    stt_key(5, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 6),    # for intel
+    stt_key(6, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_COMPR_PRI, 7),
+    stt_key(7, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 8),
+    stt_key(8, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(0, 0, 9),
+    stt_key(9, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(0, 0, 10),
+    stt_key(10, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 11),
+    stt_key(11, SYS_CALL_UNLINKAT, 0): stt_val(FLAGS_SMT_EXT, 0, STATE_GZIP),
+    stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o104400): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 6),
+    stt_key(STATE_GZIP, SYS_CALL_OPENAT, 0o404400): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 6),
+    stt_key(6, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, OP_UNZIP_PRI, 12),
+    stt_key(12, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 9),
+    # zip create
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0o1101): stt_val(FLAG_MIN_FD, 0, 22),
+    stt_key(22, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_CLR_MIN, 0, 23),
+    stt_key(23, SYS_CALL_OPENAT, 0o302): stt_val(FLAG_MIN_FD, 0, 24),
+    stt_key(24, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 26),
+    stt_key(26, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, OP_CREATE, 27),
+    stt_key(27, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(0, 0, 28),
+    stt_key(28, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 26),
+    stt_key(28, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 29),
+    stt_key(29, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_MINOR | FLAGS_SMT_EXT, OP_CREATE, STATE_ZIP),
+    # zip cover
+    stt_key(2, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAGS_CLR_MAY, 0, 30),
+    stt_key(30, SYS_CALL_OPENAT, 0o2): stt_val(FLAG_MIN_FD, OP_COVER, 31),
+    stt_key(31, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_CLR_MIN, 0, 32),
+    stt_key(32, SYS_CALL_OPENAT, 0o302): stt_val(FLAG_MIN_FD, 0, 33),
+    stt_key(33, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 34),
+    stt_key(34, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 35),
+    stt_key(35, SYS_CALL_OPENAT, 0): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 34),
+    stt_key(35, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_MINOR | FLAGS_SMT_EXT, OP_COVER, STATE_ZIP),
     # unzip
-    # stt_key(2, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 21),
-    stt_key(STATE_START, SYS_CALL_OPEN, O_RDWR | O_CREAT | O_TRUNC): stt_val(
-        FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY | FLAG_FINAL, OP_UNZIP, STATE_UNZIP),
-    stt_key(STATE_UNZIP, SYS_CALL_OPEN, O_RDWR | O_CREAT | O_TRUNC): stt_val(
-        FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY | FLAGS_LST_SMT | FLAG_FINAL, 0, STATE_UNZIP),
+    stt_key(2, SYS_CALL_UNLINKAT, 0): stt_val(0, OP_COVER, 36),
+    stt_key(36, SYS_CALL_OPENAT, 0o1102): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 37),
+    stt_key(2, SYS_CALL_OPENAT, 0o1102): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_CREATE, 37),
+    stt_key(37, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_UNZIP),
+    stt_key(STATE_UNZIP, SYS_CALL_UNLINKAT, 0): stt_val(FLAGS_SMT_LST, OP_COVER_PRI, 36),
+    stt_key(STATE_UNZIP, SYS_CALL_OPENAT, 0o1102): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAGS_SMT_LST, OP_CREATE_PRI, 37),
+    # split
+    stt_key(1, SYS_CALL_DUP3, ARGS_EQL_SRC): stt_val(FLAG_MAY_FD, 0, 18),
+    stt_key(18, SYS_CALL_READ, ARGS_EQL_SRC): stt_val(0, 0, 19),
+    stt_key(19, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_MINOR | FLAG_MIN_FD, 0, 20),
+    stt_key(20, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(0, 0, 21),
+    stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_SPLIT, STATE_SPLIT),
+    stt_key(STATE_SPLIT, SYS_CALL_OPENAT, 0o101): stt_val(FLAGS_SMT_LST | FLAG_MINOR | FLAG_MIN_FD, OP_SPLIT, 20),
+    # mv
+    stt_key(STATE_START, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_MAYOR | FLAG_MINOR | FLAGS_SMT_EXT, OP_COVER, STATE_MV),
+    stt_key(STATE_START, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_MAYOR | FLAG_MINOR | FLAGS_SMT_EXT, OP_CREATE, STATE_MV),
+    stt_key(STATE_MV, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_MAYOR | FLAG_MINOR | FLAGS_SMT_LST | FLAGS_SMT_EXT, OP_COVER_PRI, STATE_MV),
+    stt_key(STATE_MV, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_MAYOR | FLAG_MINOR | FLAGS_SMT_LST | FLAGS_SMT_EXT, OP_CREATE_PRI, STATE_MV),
     # cp
-    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY,
-                                                                    OP_CREATE_PRI, 21),
-    stt_key(1, SYS_CALL_OPEN, O_WRONLY | O_TRUNC): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, OP_COVER_PRI, 22),
-    stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 23),
-    stt_key(22, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(0, 0, 23),
-    stt_key(23, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAG_FINAL, 0, STATE_CP),
-    stt_key(STATE_CP, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAGS_LST_SMT | FLAG_DELAY | FLAG_MAYOR | FLAG_MAY_FD, 0, 1),
-    # vim vi
-    stt_key(12, SYS_CALL_OPEN, O_RDWR | O_CREAT | O_EXCL): stt_val(0, 0, 24),
-    stt_key(20, SYS_CALL_SOCKET, stt_net(AF_UNIX, SOCK_CLOEXEC | SOCK_NONBLOCK | SOCK_STREAM)): stt_val(0, 0, 24),
-    stt_key(24, SYS_CALL_OPEN, O_NOFOLLOW | O_RDWR | O_CREAT | O_EXCL): stt_val(0, 0, 25),
-    stt_key(24, SYS_CALL_OPEN, 0o100302): stt_val(0, 0, 25),  # for arm chip
-    stt_key(25, SYS_CALL_OPEN, O_RDONLY): stt_val(FLAG_MAYOR | FLAG_DELAY, 0, 26),
-    stt_key(26, SYS_CALL_OPEN, O_WRONLY | O_CREAT): stt_val(FLAGS_CLR_MAY | FLAG_MINOR | FLAG_MIN_FD | FLAG_DELAY, 0,
-                                                            27),
-    stt_key(27, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_CREATE, STATE_VI),
-    stt_key(27, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(FLAG_FINAL, OP_WRITE, STATE_VI),
-    stt_key(26, SYS_CALL_OPEN, O_NOFOLLOW | O_WRONLY | O_CREAT | O_EXCL): stt_val(FLAG_FINAL, OP_READ, STATE_VI),
-    stt_key(26, SYS_CALL_OPEN, 0o100301): stt_val(FLAG_FINAL, OP_READ, STATE_VI),  # for arm chip
-    stt_key(STATE_VI, SYS_CALL_OPEN, O_WRONLY | O_CREAT):
-        stt_val(FLAG_DELAY | FLAG_MINOR | FLAG_FINAL, OP_SAVE_PRI, STATE_VI),
+    stt_key(1, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_CREATE_PRI, 38),
+    stt_key(1, SYS_CALL_OPENAT, 0o1001): stt_val(FLAG_MINOR | FLAG_MIN_FD, OP_COVER_PRI, 39),
+    stt_key(38, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
+    stt_key(39, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, 0, STATE_CP),
+    stt_key(STATE_CP, SYS_CALL_OPENAT, 0): stt_val(FLAGS_SMT_LST, 0, 1),
 }
 
 
@@ -269,35 +247,36 @@ if prog is None or prog == "":
     exit(-1)
 
 b = BPF(text=prog)
-b.attach_uprobe(name="c", sym="open", fn_name="do_open_entry")
-b.attach_uprobe(name="c", sym="openat", fn_name="do_openat_entry")
-b.attach_uprobe(name="c", sym="dup2", fn_name="do_dup2_entry")
-b.attach_uprobe(name="c", sym="rename", fn_name="do_rename_entry")
-b.attach_uprobe(name="c", sym="renameat2", fn_name="do_renameat2_entry")
-b.attach_uprobe(name="c", sym="read", fn_name="do_read_entry")
-b.attach_uprobe(name="c", sym="write", fn_name="do_write_entry")
-b.attach_uprobe(name="c", sym="close", fn_name="do_close_entry")
-b.attach_uprobe(name="c", sym="socket", fn_name="do_socket_entry")
-b.attach_uprobe(name="c", sym="connect", fn_name="do_connect_entry")
-b.attach_uprobe(name="c", sym="unlinkat", fn_name="do_unlinkat_entry")
-b.attach_uprobe(name="c", sym="mkdir", fn_name="do_mkdir_entry")
-b.attach_uprobe(name="c", sym="rmdir", fn_name="do_rmdir_entry")
-b.attach_uprobe(name="c", sym="exit", fn_name="do_exit_entry")
-b.attach_uretprobe(name="c", sym="open", fn_name="do_open_return")
-b.attach_uretprobe(name="c", sym="openat", fn_name="do_openat_return")
-b.attach_uretprobe(name="c", sym="mkdir", fn_name="do_mkdir_return")
-b.attach_uretprobe(name="c", sym="rmdir", fn_name="do_rmdir_return")
-b.attach_uretprobe(name="c", sym="unlinkat", fn_name="do_unlinkat_return")
-b.attach_uretprobe(name="c", sym="rename", fn_name="do_rename_return")
-b.attach_uretprobe(name="c", sym="renameat2", fn_name="do_renameat2_return")
-b.attach_uretprobe(name="c", sym="socket", fn_name="do_socket_return")
+b.attach_kprobe(event=b.get_syscall_fnname("openat"), fn_name="syscall__openat")
+b.attach_kprobe(event=b.get_syscall_fnname("read"), fn_name="syscall__read")
+b.attach_kprobe(event=b.get_syscall_fnname("write"), fn_name="syscall__write")
+b.attach_kprobe(event=b.get_syscall_fnname("close"), fn_name="syscall__close")
+b.attach_kprobe(event=b.get_syscall_fnname("unlinkat"), fn_name="syscall__unlinkat")
+b.attach_kprobe(event=b.get_syscall_fnname("mkdirat"), fn_name="syscall__mkdirat")
+b.attach_kprobe(event=b.get_syscall_fnname("renameat"), fn_name="syscall__renameat")
+b.attach_kprobe(event=b.get_syscall_fnname("renameat2"), fn_name="syscall__renameat2")
+b.attach_kprobe(event=b.get_syscall_fnname("dup3"), fn_name="syscall__dup3")
+b.attach_kprobe(event=b.get_syscall_fnname("socket"), fn_name="syscall__socket")
+b.attach_kprobe(event=b.get_syscall_fnname("connect"), fn_name="syscall__connect")
+b.attach_kprobe(event=b.get_syscall_fnname("exit_group"), fn_name="syscall_exit_group")
+b.attach_kretprobe(event=b.get_syscall_fnname("openat"), fn_name="syscall__openat_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("read"), fn_name="syscall__read_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("write"), fn_name="syscall__write_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("close"), fn_name="syscall__close_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("unlinkat"), fn_name="syscall__unlinkat_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("mkdirat"), fn_name="syscall__mkdirat_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("renameat"), fn_name="syscall__renameat_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("renameat2"), fn_name="syscall__renameat2_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("dup3"), fn_name="syscall__dup3_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("socket"), fn_name="syscall__socket_return")
+b.attach_kretprobe(event=b.get_syscall_fnname("connect"), fn_name="syscall__connect_return")
 
-b.attach_kprobe(event="vfs_open", fn_name="do_vfs_open")
-b.attach_kprobe(event="vfs_unlink", fn_name="do_vfs_unlink")
-b.attach_kprobe(event="vfs_rename", fn_name="do_vfs_rename")
-b.attach_kprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir")
-b.attach_kprobe(event="vfs_rmdir", fn_name="do_vfs_rmdir")
-b.attach_kretprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir_return")
+# b.attach_kprobe(event="vfs_open", fn_name="do_vfs_open")
+# b.attach_kprobe(event="vfs_unlink", fn_name="do_vfs_unlink")
+# b.attach_kprobe(event="vfs_rename", fn_name="do_vfs_rename")
+# b.attach_kprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir")
+# b.attach_kprobe(event="vfs_rmdir", fn_name="do_vfs_rmdir")
+# b.attach_kretprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir_return")
 
 mp = b["stt_behav"]
 for key, val in stt.items():
@@ -348,7 +327,7 @@ with open("/etc/passwd") as f:
         args = line.split(":")
         usr.update({int(args[2]): args[0]})
 
-__DEBUG__ = False
+__DEBUG__ = True
 boot_time = psutil.boot_time()
 
 # debug version which prints the log on the screen.

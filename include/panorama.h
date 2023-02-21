@@ -6,26 +6,22 @@
 #ifndef LOGGER_H
 #define LOGGER_H
 
-#define FLAGS_SUBMIT    0x00000001  // submit to the user space
-#define FLAGS_DELAY     0x00000002  // copy the file name in `exit` but not `enter`
-#define FLAGS_MAYOR     0x00000004  // copy the first file name
-#define FLAGS_MINOR     0x00000008  // copy the second file name
-#define FLAGS_MAY_FD    0x00000010  // copy the first file fd
-#define FLAGS_MIN_FD    0x00000020  // copy the second file fd
-#define FLAGS_NET_FD    0x00000040  // copy the socket fd
-#define FLAGS_NET       0x00000080  // copy the net info
-#define FLAGS_PARENT    0x00000100  // copy the net info to parent data and update
+#define FLAGS_MAYOR     0x00000001  // copy the first file name
+#define FLAGS_MINOR     0x00000002  // copy the second file name
+#define FLAGS_NET       0x00000004  // copy the net info
+#define FLAGS_MAY_FD    0x00000008  // copy the first file fd
+#define FLAGS_MIN_FD    0x00000010  // copy the second file fd
+#define FLAGS_NET_FD    0x00000020  // copy the socket fd
+#define FLAGS_PARENT    0x00000040  // copy the net info to parent data and update
                                     // parent task's state
-#define FLAGS_FINAL     0x00000200  // cope in `exit`
-#define FLAGS_NEXT      0x00000400  // the next state transition must be caused
-                                    // by the next sys_call.
-//#define FLAGS_COM_FD    0x00000400  // compare with state's fds
-#define FLAGS_COM_IO    0x00000800  // compare with standard input 0 and output 1
                                     // next time
-#define FLAGS_CLR_MAY   0x00001000  // clear mayor info
-#define FLAGS_CLR_MIN   0x00002000  // clear minor info
-#define FLAGS_DLY_SMT   0x00004000  // submit at return
-#define FLAGS_LST_SMT   0x00008000  // submit the last state
+#define FLAGS_CLR_MAY   0x00000080  // clear mayor info
+#define FLAGS_CLR_MIN   0x00000100  // clear minor info
+#define FLAGS_SMT_CUR   0x00000200  // submit at return
+#define FLAGS_SMT_LST   0x00000400  // submit the last state
+#define FLAGS_SMT_EXT   0x00000800  // submit at `exit`
+#define FLAGS_NEXT      0x00001000  // the next state transition must be caused
+// by the next sys_call.
 
 /* according to behaviors in the paper */
 #define OP_CREATE   0x01
@@ -72,21 +68,18 @@
 #define STATE_SSH    0x800c
 #define STATE_SCP    0x800d
 
-#define SYS_CALL_OPEN       0x00
-#define SYS_CALL_OPENAT     0x01
-#define SYS_CALL_DUP2       0x02
-#define SYS_CALL_RENAME     0x03
-#define SYS_CALL_RENAMEAT2  0x04
-#define SYS_CALL_READ       0x05
-#define SYS_CALL_WRITE      0x06
-#define SYS_CALL_CLOSE      0x07
-#define SYS_CALL_UNLINK     0x08
-#define SYS_CALL_UNLINKAT   0x09
-#define SYS_CALL_MKDIR      0x0a
-#define SYS_CALL_RMDIR      0x0b
-#define SYS_CALL_EXIT       0x0c
-#define SYS_CALL_SOCKET     0x0d
-#define SYS_CALL_CONNECT    0x0e
+#define SYS_CALL_OPENAT     0x00
+#define SYS_CALL_DUP3       0x01
+#define SYS_CALL_RENAMEAT   0x02
+#define SYS_CALL_RENAMEAT2  0x03
+#define SYS_CALL_READ       0x04
+#define SYS_CALL_WRITE      0x05
+#define SYS_CALL_CLOSE      0x06
+#define SYS_CALL_UNLINKAT   0x07
+#define SYS_CALL_MKDIRAT    0x08
+#define SYS_CALL_EXIT_GROUP 0x09
+#define SYS_CALL_SOCKET     0x0a
+#define SYS_CALL_CONNECT    0x0b
 
 #define ARGS_EQL_SRC  0x0000000001
 #define ARGS_EQL_DST  0x0000000002
