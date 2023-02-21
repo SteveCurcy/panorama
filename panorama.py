@@ -205,6 +205,15 @@ stt = {
     stt_key(41, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_MINOR | FLAG_MIN_FD | FLAGS_CLR_MAY, 0, 42),
     stt_key(42, SYS_CALL_WRITE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_WRITE, STATE_VI),
     stt_key(42, SYS_CALL_CLOSE, ARGS_EQL_DST): stt_val(FLAGS_SMT_EXT, OP_CREATE, STATE_VI),
+    # ssh and scp
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0o2): stt_val(0, 0, 43),
+    stt_key(43, SYS_CALL_SOCKET, stt_net(AF_UNIX, 0o2004001)): stt_val(0, 0, 44),
+    stt_key(44, SYS_CALL_SOCKET, stt_net(AF_INET, 0o1)): stt_val(FLAG_NET_FD, 0, 45),
+    stt_key(45, SYS_CALL_CONNECT, ARGS_EQL_NET): stt_val(FLAG_NET | FLAG_PARENT, 0, 46),
+    stt_key(46, SYS_CALL_CLOSE, ARGS_EQL_NET): stt_val(FLAGS_SMT_EXT, OP_LOGIN, STATE_SSH),
+    stt_key(46, SYS_CALL_OPENAT, 0o4000): stt_val(FLAG_MAYOR | FLAG_MAY_FD, 0, 47),
+    stt_key(STATE_SCP, SYS_CALL_OPENAT, 0o4000): stt_val(FLAG_MAYOR | FLAG_MAY_FD | FLAGS_SMT_LST, 0, 47),
+    stt_key(47, SYS_CALL_CLOSE, ARGS_EQL_SRC): stt_val(FLAGS_SMT_EXT, OP_UPLOAD, STATE_SCP),
 }
 
 
@@ -347,7 +356,7 @@ boot_time = psutil.boot_time()
 
 # debug version which prints the log on the screen.
 file_info = """{:<6} {:<6} {:<5} \033[0;33;40m{:<6}\033[0m {:<6} {:<16} {:<16} {:<8} {:<8} {:<8} {} {:X}"""
-net_info = """{:<6} {:<6} {:<5} \033[0;32;40m{:<6}\033[0m {:<6} {:<21} {:<16} {:<8} {} {:X}"""
+net_info = """{:<6} {:<6} {:<5} \033[0;32;40m{:<6}\033[0m {:<6} {:<16} {:<21} {:<8} {:X}"""
 
 
 class LogItem:
@@ -393,9 +402,9 @@ def print_event(cpu, data, size):
                                    event.f0.i_ino, event.f1.i_ino, event.f0.fd, event.f1.fd, event.s.for_assign))
         else:
             print(net_info.format(event.ppid, event.pid, event.uid, event.comm.decode(),
-                                  get_behavior(event.s.fr.operate), socket.inet_ntoa(struct.pack('I', event.net.addr)) +
-                                  ":%u" % (socket.ntohs(event.net.port)), event.f0.name.decode(),
-                                  event.f0.i_ino, event.f1.i_ino, event.s.for_assign))
+                                  get_behavior(event.s.fr.operate), event.f0.name.decode(),
+                                  socket.inet_ntoa(struct.pack('I', event.net.addr)) + ":%u" % (socket.ntohs(event.net.port)),
+                                  event.f0.i_ino, event.s.for_assign))
     else:
         pid = int(event.pid)
         log = tmp_log.get(pid)

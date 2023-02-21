@@ -196,7 +196,7 @@ __always_inline static int do_return(struct pt_regs *ctx) {
             nex->net.fd = ret_val;
     }
 
-    struct behav_t *parent = state_behav.lookup(&(nex->pid));
+    struct behav_t *parent = state_behav.lookup(&(nex->ppid));
     if (parent && CHECK_FLAG(nex->s.for_assign, FLAGS_PARENT)) {
         parent->net.addr = nex->net.addr;
         parent->net.port = nex->net.port;
@@ -213,7 +213,7 @@ __always_inline static int do_return(struct pt_regs *ctx) {
     }
     /* remove flags for storing after using */
 //    nex->s.for_assign &= 0xfffff1ffffffffff;
-//    if (nex->s.fr.state == 32) {
+//    if (nex->s.fr.state == 43) {
 //        behavior.perf_submit(ctx, nex, sizeof(*nex));
 //    }
 
