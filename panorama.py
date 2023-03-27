@@ -1,12 +1,14 @@
 #!/bin/env python
+import sys
 
 from bcc import BPF
 import ctypes as ct
 import socket
 import struct
 import psutil
+import argparse
 from datetime import datetime, timedelta
-from threading import Timer, Lock
+from threading import Timer, Lock, Thread
 
 FLAG_FILE_NAME = 0x00000001
 FLAG_SOCKET = 0x00000002
@@ -17,6 +19,7 @@ FLAG_SMT_LST = 0x00000020
 FLAG_SMT_SOCK = 0x00000040
 FLAG_RNM_SRC = 0x00000080
 FLAG_ACCEPT = 0x00000100
+FLAG_CHILD = 0x00000200
 
 OP_CREATE = 0x01
 OP_REMOVE = 0x02
@@ -30,20 +33,20 @@ OP_CONNECT = 0x09
 OP_ACCEPT = 0x0a
 
 STATE_START = 0x0000
-STATE_TOUCH = 0x8000  # dest output
-STATE_RM = 0x8001  # src output
-STATE_MKDIR = 0x8002  # dest output
-STATE_RMDIR = 0x8003  # src output
-STATE_CAT = 0x8004  # src output
-STATE_MV = 0x8005  # dest output
-STATE_CP = 0x8006  # dest output
-STATE_GZIP = 0x8007  # dest output   unlink src
-STATE_ZIP = 0x8008  # multi src dest output
-STATE_UNZIP = 0x8009  # dest output
-STATE_SPLIT = 0x800a  # dest output
-STATE_VI = 0x800b  # dest output
-STATE_SSH = 0x800c  # dest output
-STATE_SCP = 0x800d  # dest output
+STATE_TOUCH = 0x8000
+STATE_RM = 0x8001
+STATE_MKDIR = 0x8002
+STATE_RMDIR = 0x8003
+STATE_CAT = 0x8004
+STATE_MV = 0x8005
+STATE_CP = 0x8006
+STATE_GZIP = 0x8007
+STATE_ZIP = 0x8008
+STATE_UNZIP = 0x8009
+STATE_SPLIT = 0x800a
+STATE_VI = 0x800b
+STATE_SSH = 0x800c
+STATE_SCP = 0x800d
 
 SYS_CALL_OPENAT = 0x00
 SYS_CALL_DUP3 = 0x01
@@ -158,14 +161,17 @@ stt = {
     stt_key(1, SYS_CALL_DUP3, ARGS_EQL_FD): stt_val(FLAG_FD, 0, 18),
     stt_key(18, SYS_CALL_READ, ARGS_EQL_FD): stt_val(0, 0, 19),
     stt_key(19, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 20),
-    stt_key(20, SYS_CALL_WRITE, ARGS_EQL_FD): stt_val(0, 0, 21),
-    stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_WRITE, STATE_SPLIT),
+    stt_key(20, SYS_CALL_WRITE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_WRITE, 21),
+    stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(0, 0, STATE_SPLIT),
     stt_key(STATE_SPLIT, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 20),
     # mv
-    stt_key(STATE_START, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_COVER, STATE_MV),
-    stt_key(STATE_START, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_CREATE, STATE_MV),
+    stt_key(STATE_START, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_COVER,
+                                                        STATE_MV),
+    stt_key(STATE_START, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_CREATE,
+                                                         STATE_MV),
     stt_key(STATE_MV, SYS_CALL_RENAMEAT, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_COVER, STATE_MV),
-    stt_key(STATE_MV, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_CREATE, STATE_MV),
+    stt_key(STATE_MV, SYS_CALL_RENAMEAT2, 0): stt_val(FLAG_FILE_NAME | FLAG_SMT_CUR | FLAG_RNM_SRC, OP_CREATE,
+                                                      STATE_MV),
     # cp
     stt_key(1, SYS_CALL_OPENAT, 0o301): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_LST, 0, 38),
     stt_key(1, SYS_CALL_OPENAT, 0o1001): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_LST, 0, 39),
@@ -188,27 +194,24 @@ stt = {
     stt_key(42, SYS_CALL_WRITE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_WRITE, STATE_VI),
     stt_key(42, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_CREATE, STATE_VI),
     # ssh and scp
+    stt_key(STATE_START, SYS_CALL_OPENAT, 0o2): stt_val(0, 0, 43),
     stt_key(43, SYS_CALL_SOCKET, stt_net(AF_UNIX, 0o2004001)): stt_val(0, 0, 44),
     stt_key(44, SYS_CALL_SOCKET, stt_net(AF_INET, 0o1)): stt_val(FLAG_FD, 0, 45),
-    stt_key(45, SYS_CALL_CONNECT, ARGS_EQL_FD): stt_val(FLAG_SOCKET | FLAG_PARENT | FLAG_SMT_CUR | FLAG_SMT_SOCK, OP_CONNECT, 46),
+    stt_key(45, SYS_CALL_CONNECT, ARGS_EQL_FD): stt_val(FLAG_SOCKET | FLAG_PARENT | FLAG_SMT_CUR | FLAG_SMT_SOCK,
+                                                        OP_CONNECT, 46),
     stt_key(46, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(0, 0, STATE_SSH),
     stt_key(46, SYS_CALL_OPENAT, 0o4000): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_LST, 0, 47),
     stt_key(STATE_SCP, SYS_CALL_OPENAT, 0o4000): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 47),
     stt_key(47, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_READ, STATE_SCP),
     # scp accept
-    # stt_key(14, SYS_CALL_OPENAT, 0o2): stt_val(0, 0, 11),
     stt_key(32, SYS_CALL_SOCKET, stt_net(AF_UNIX, 0o2004001)):
-        stt_val(FLAG_SMT_SOCK | FLAG_ACCEPT, OP_ACCEPT, 27),
-    # stt_key(22, SYS_CALL_WRITE, ARGS_EQL_FD): stt_val(FLAG_PARENT_EXIST, 0, 11),
-    # stt_key(11, SYS_CALL_OPENAT, 0o2): stt_val(0, 0, 29),
-    # stt_key(STATE_START, SYS_CALL_SOCKET, stt_net(AF_UNIX, 0o2004001)): stt_val(FLAG_PARENT_EXIST | FLAG_FD, 0, 48),
-    # stt_key(48, SYS_CALL_CONNECT, ARGS_EQL_FD): stt_val(0, 0, 49),
-    # stt_key(11, SYS_CALL_OPENAT, 0o12040000): stt_val(0, 0, 29),
+        stt_val(FLAG_SMT_SOCK | FLAG_CHILD, OP_ACCEPT, 27),
     stt_key(27, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_LST, 0, 29),  # for scp
     stt_key(27, SYS_CALL_OPENAT, 0o1101): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_LST, 0, 29),  # for sftp-server
     stt_key(29, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_WRITE, STATE_SCP),
     stt_key(STATE_SCP, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 29),  # for scp
     stt_key(STATE_SCP, SYS_CALL_OPENAT, 0o1101): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 29),  # for sftp-server
+    stt_key(23, SYS_CALL_OPENAT, 0o2): stt_val(FLAG_ACCEPT, 0, 48)
 }
 
 
@@ -230,7 +233,7 @@ class NetT(ct.Structure):
 class DetailT(ct.Union):
     _fields_ = [
         ("file", FileT),
-        ("sock", NetT)
+        ("remote", NetT)
     ]
 
 
@@ -256,20 +259,72 @@ class BehavT(ct.Structure):
         ("ppid", ct.c_uint32),
         ("pid", ct.c_uint32),
         ("uid", ct.c_uint32),
+        ("fd", ct.c_int),
         ("comm", ct.c_char * 32),
         ("s", StateT),
-        ("fd", ct.c_int),
-        ("detail", DetailT)
+        ("detail", DetailT),
+        ("local", NetT)
     ]
 
 
-prog = None
+# ======= end of data definition ======
+
+
 with open("panorama.c") as f:
     prog = f.read()
 if prog is None or prog == "":
     print("file open error")
     exit(-1)
 
+parser = argparse.ArgumentParser()
+parser.add_argument("-d", "--debug", help="print more infos like states for debugging", action="store_true")
+args = parser.parse_args()
+
+op_map = {
+    OP_CREATE: "create",
+    OP_REMOVE: "remove",
+    OP_READ: "read",
+    OP_WRITE: "write",
+    OP_COVER: "cover",
+    OP_SAVE: "save",
+    OP_MKDIR: "mkdir",
+    OP_RMDIR: "rmdir",
+    OP_CONNECT: "connect",
+    OP_ACCEPT: "accept"
+}
+
+
+def get_behavior(op: int) -> str:
+    if op in op_map:
+        return op_map[op]
+    else:
+        return "other"
+
+
+def output_log(logs: list) -> None:
+    out.writelines(logs)
+    out.flush()
+
+
+usr = dict()
+with open("/etc/passwd") as f:
+    for line in f:
+        items = line.split(":")
+        usr.update({int(items[2]): items[0]})
+
+boot_time = psutil.boot_time()
+# determine which output target is used
+log_file_name = "/var/log/syslog.log"
+if args.debug:
+    out = sys.stdout
+    group_size = 4
+else:
+    out = open(log_file_name, "w")
+    group_size = 20971  # output when logs size reach 20M
+log_size = 0
+ready_to_write = list()
+
+# operations of eBPF
 b = BPF(text=prog)
 b.attach_kprobe(event=b.get_syscall_fnname("openat"), fn_name="syscall__openat")
 b.attach_kprobe(event=b.get_syscall_fnname("read"), fn_name="syscall__read")
@@ -302,7 +357,9 @@ b.attach_kprobe(event="vfs_unlink", fn_name="do_vfs_unlink")
 b.attach_kprobe(event="vfs_rename", fn_name="do_vfs_rename")
 b.attach_kprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir")
 b.attach_kprobe(event="vfs_rmdir", fn_name="do_vfs_rmdir")
+b.attach_kprobe(event="tcp_v4_connect", fn_name="do_tcp_v4_connect")
 b.attach_kretprobe(event="vfs_mkdir", fn_name="do_vfs_mkdir_return")
+b.attach_kretprobe(event="tcp_v4_connect", fn_name="do_tcp_v4_connect_return")
 
 mp = b["stt_behav"]
 for key, val in stt.items():
@@ -310,133 +367,56 @@ for key, val in stt.items():
     current_val = mp.Leaf(val)
     mp[current_key] = current_val
 
-op_map = {
-    OP_CREATE: "create",
-    OP_REMOVE: "remove",
-    OP_READ: "read",
-    OP_WRITE: "write",
-    OP_COVER: "cover",
-    OP_SAVE: "save",
-    OP_MKDIR: "mkdir",
-    OP_RMDIR: "rmdir",
-    OP_CONNECT: "connect",
-    OP_ACCEPT: "accept"
-}
-
-
-def get_behavior(OP: int) -> str:
-    if OP in op_map:
-        return op_map[OP]
-    else:
-        return "other"
-
-
-usr = dict()
-with open("/etc/passwd") as f:
-    for line in f:
-        args = line.split(":")
-        usr.update({int(args[2]): args[0]})
-
-__DEBUG__ = True
-boot_time = psutil.boot_time()
-
-
-class LogItem:
-    def __init__(self):
-        self.time = None
-        self.src = list()
-        self.fm = None
-        self.task = None
-        self.to = None
-        self.dest = None
-
-
-tmp_log = dict()  # pid -> LogItem
-logs = list()  # list of logs
-lock = Lock()
-dt = datetime.now().date()
-log_file = open("{}-{}-{}.log".format(dt.year, dt.month, dt.day), "w")
-
-
-def log_switch():
-    global log_file, timer
-    date = datetime.now().date()
-    with lock:
-        log_file.close()
-        log_file = open("{}-{}-{}.log".format(date.year, date.month, date.day), "w")
-    timer = Timer(86400, log_switch)
-    timer.start()
-
-
-# get the next day's datetime
-next_time = dt + timedelta(days=+1)
-next_time = datetime(next_time.year, next_time.month, next_time.day, 3, 0, 0)
-timer = Timer((next_time - datetime.now()).total_seconds(), log_switch)
-timer.start()
-
-# debug version which prints the log on the screen.
-file_info = """{:<6} {:<6} {:<10} \033[0;33;40m{:<6}\033[0m {:<6} {:>16} ({}) {} {:X}"""
-net_info = """{:<6} {:<6} {:<10} \033[0;32;40m{:<6}\033[0m {:<6} {:<21} {:X}"""
-
 
 def print_event(cpu, data, size):
+    global log_size, out, group_size, ready_to_write
+
     event = ct.cast(data, ct.POINTER(BehavT)).contents
-    if __DEBUG__:
-        if not CHECK_FLAG(event.s.for_assign, FLAG_SMT_SOCK):
-            print(file_info.format(event.ppid, event.pid, event.uid, event.comm.decode(),
-                                   get_behavior(event.s.fr.operate), event.detail.file.name.decode(),
-                                   event.detail.file.i_ino, event.fd, event.s.for_assign))
+    # items for logs
+    time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9))
+    task = "{} {}".format(event.ppid, event.pid)
+    if not CHECK_FLAG(event.s.for_assign, FLAG_SMT_SOCK):
+        ready_to_write += [time, " ", task, " ", usr[event.uid], " ", event.comm.decode(),
+                           " ", get_behavior(event.s.fr.operate), " ", event.detail.file.name.decode(),
+                           ":", str(event.detail.file.i_ino)]
+        if args.debug:
+            ready_to_write += [" ", str(event.fd), " %x" % event.s.for_assign]
+    else:
+        # laddr, daddr, lport, dport = 0, 0, 0, 0
+        if event.s.fr.operate == OP_CONNECT:
+            laddr = event.local.addr
+            lport = event.local.port
+            daddr = event.detail.remote.addr
+            dport = event.detail.remote.port
         else:
-            print(net_info.format(event.ppid, event.pid, event.uid, event.comm.decode(),
-                                  get_behavior(event.s.fr.operate),
-                                  socket.inet_ntoa(struct.pack('I', event.detail.sock.addr)) + ":%u" %
-                                  socket.ntohs(event.detail.sock.port), event.s.for_assign))
-    # else:
-    #     pid = int(event.pid)
-    #     log = tmp_log.get(pid)
-    #     if not log:
-    #         task = event.comm.decode()
-    #         log = LogItem()
-    #         tmp_log.update({pid: log})
-    #         log.time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9).time())
-    #         log.task = "{}({})".format(task, usr[event.uid])
-    #         if task == "gzip":
-    #             log.fm = "remove"
-    #     if (event.s.fr.operate & 0x7f) < OP_LOGIN:
-    #         if event.f1.i_ino != 0:
-    #             # strip in case "./name1"
-    #             log.dest = "{}({})".format(event.f1.name.decode().replace(r"./", ""), event.f1.i_ino)
-    #             log.to = get_behavior(event.s.fr.operate)
-    #     else:
-    #         log.dest = "{}:{}".format(socket.inet_ntoa(struct.pack('I', event.net.addr)), socket.ntohs(event.net.port))
-    #         log.to = get_behavior(event.s.fr.operate)
-    #     if event.f0.i_ino:
-    #         log.src.append("{}({})".format(event.f0.name.decode().replace(r"./", ""), event.f0.i_ino))
-    #         if not log.fm:
-    #             log.fm = "read"
-    #     else:
-    #         log.src.append(None)
-    #     if event.s.fr.state & 0x8000 or log.dest:
-    #         if not log.dest:
-    #             log.fm = get_behavior(event.s.fr.operate)
-    #         for src in log.src:
-    #             tmp = " {} {} {} {} {}\n".format(src, log.fm, log.task, log.to, log.dest)
-    #             if len(logs) and logs[-1] == tmp:
-    #                 continue
-    #             logs.append(log.time)
-    #             logs.append(tmp)
-    #         del tmp_log[pid]
-    #         del log
-    #         if len(logs) >= 13618:
-    #             with lock:
-    #                 log_file.writelines(logs)
-    #                 log_file.flush()  # write into the disk
-    #             logs.clear()
+            laddr = event.detail.remote.addr
+            lport = event.detail.remote.port
+            daddr = event.local.addr
+            dport = event.local.port
+        ready_to_write += [time, " ", task, " ", usr[event.uid], " ", event.comm.decode(),
+                           " ", get_behavior(event.s.fr.operate),
+                           "-by ", "{}:{}".format(socket.inet_ntoa(struct.pack('I', laddr)), lport)]
+        if args.debug:
+            ready_to_write += [" %x" % event.s.for_assign]
+        ready_to_write.append("\n")
+        log_size += 1
+        ready_to_write += [time, " ", task, " ", usr[event.uid], " ", event.comm.decode(),
+                           " ", get_behavior(event.s.fr.operate),
+                           " ", "{}:{}".format(socket.inet_ntoa(struct.pack('I', daddr)), dport)]
+        if args.debug:
+            ready_to_write += [" %x" % event.s.for_assign]
+    ready_to_write.append("\n")
+
+    log_size += 1
+    if log_size >= group_size:
+        log_size = 0
+        Thread(target=output_log, args=(ready_to_write,)).start()
+        ready_to_write = list()
 
 
 print("Bpf program loaded. Ctrl + C to stop...")
-if __DEBUG__:
-    print("%-6s %-6s %-5s %-6s TYPE" % ("PPID", "PID", "USER", "TASK"))
+if args.debug:
+    print("%-26s %-6s %-6s %-10s %-6s TYPE" % ("TIME", "PPID", "PID", "USER", "TASK"))
 
 b["behavior"].open_perf_buffer(print_event)
 while True:
@@ -444,8 +424,9 @@ while True:
         b.perf_buffer_poll()
     except KeyboardInterrupt:
         print()
-        timer.cancel()
-        if len(logs):
-            log_file.writelines(logs)
-        log_file.close()
+        if log_size:
+            out.writelines(ready_to_write)
+            out.flush()
+        if not args.debug:
+            out.close()
         exit(0)
