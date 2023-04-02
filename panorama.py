@@ -159,7 +159,7 @@ stt = {
     stt_key(STATE_UNZIP, SYS_CALL_OPENAT, 0o1102): stt_val(FLAG_FILE_NAME | FLAG_FD | FLAG_SMT_CUR, OP_CREATE, 37),
     # split
     stt_key(1, SYS_CALL_DUP3, ARGS_EQL_FD): stt_val(FLAG_FD, 0, 18),
-    stt_key(18, SYS_CALL_READ, ARGS_EQL_FD): stt_val(0, 0, 19),
+    stt_key(18, SYS_CALL_READ, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_READ, 19),
     stt_key(19, SYS_CALL_OPENAT, 0o101): stt_val(FLAG_FILE_NAME | FLAG_FD, 0, 20),
     stt_key(20, SYS_CALL_WRITE, ARGS_EQL_FD): stt_val(FLAG_SMT_CUR, OP_WRITE, 21),
     stt_key(21, SYS_CALL_CLOSE, ARGS_EQL_FD): stt_val(0, 0, STATE_SPLIT),
