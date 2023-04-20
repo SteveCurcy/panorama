@@ -1,16 +1,10 @@
 /*
- * @date    2023-03-03.
- * @version v6.0.5.230307_alpha_a1_Xu.C
  * @author  Xu.Cao
- * @details To maintain the state of system context by tracing syscalls, get details by tracing vfs_* kernel functions.
+ * @date    2023-03-03.
+ * @details 通过追踪系统调用维护当前状态机的状态和当前进程上下文信息，通过内核函数获取更详细的信息
  *
  * @functions:
- *      __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args, int fd0, int fd1, u64 net_info, u8 flag)
- *      __always_inline static int do_return(struct pt_regs *ctx)
- *      @details
- *          do_entry is to receive some essential arguments of syscalls and fill the next possible state.
- *          do_return will update the state if return-value is valid. besides, it will submit the state infos (log)
- *              by the state transition table.
+ *      这里只展示在代码中没有注释的系统调用函数集合，除了 exit_group 函数都对应一个入口和出口函数
  *
  *      int syscall__openat(struct pt_regs *ctx, int dirfd, const char __user *name, int FLAG)
  *      int syscall__openat_return(struct pt_regs *ctx)
@@ -37,21 +31,13 @@
  *      int syscall__accept(struct pt_regs *ctx, int sockfd, struct sockaddr __user* addr)
  *      int syscall__accept_return(struct pt_regs *ctx)
  *      int syscall_exit_group(struct pt_regs *ctx, int sig)
- *      @details
- *          All `syscall__*` functions will be injected to trace the related syscall's context and maintain the state.
- *          Specially, syscall__exit_group is the exit point of a task, so will destruct the state struct.
  *
- *      int do_vfs_open(struct pt_regs *ctx, const struct path *path, struct file *file)
- *      int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct inode *dir, struct dentry *dentry, struct inode **delegated_inode)
- *      int do_vfs_rename(struct pt_regs *ctx, struct renamedata *rd)
- *      int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct inode *dir, struct dentry *dentry, umode_t mode)
- *      int do_vfs_mkdir_return(struct pt_regs *ctx)
- *      int do_vfs_rmdir(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct inode *dir, struct dentry *dentry)
- *      @details
- *          All `do_vfs_*` functions will be injected to trace deeper kernel functions and get file names and inodes, etc.
  * @history
  *      <author>    <time>      <version>                       <description>
- *      Xu.Cao      2023-03-07  6.0.5.230307_alpha_a1_Xu.C     Format this code
+ *      Xu.Cao      2023-03-07  6.0.5                           规范化当前代码
+ *      Xu.Cao      2023-04-17  6.0.6                           1. 修改了 do_entry 和 do_return 的 __always_inline 属性，
+ *                                                                 防止出现 inline 导致的二进制爆炸问题.
+ *                                                              2. 增加了对 close 系统调用 fd 的处理，将 fd 置为 -1
  */
 #include <uapi/linux/ptrace.h>
 #include <linux/dcache.h>
@@ -65,6 +51,8 @@
 #include "include/ebpf_string.h"
 #include "include/panorama.h"
 
+[MICRO_DEFINITIONS]
+
 BPF_HASH(stt_behav, u64, u64, 4096);                // state transition table (stt) of behavior
 BPF_HASH(state_behav, u32, struct behav_t, 4096);   // pid -> state, state of behavior
 BPF_HASH(next_state, u32, struct behav_t, 4096);    // save the next possible state temporarily
@@ -73,17 +61,18 @@ BPF_HASH(tmp_dentry, u32, struct dentry*, 32);      // save dentry info for vfs_
 BPF_HASH(currsock, u32, struct sock *, 32);
 BPF_PERF_OUTPUT(behavior);                          // used to submit current state of behavior to user space and print it
 
-/*
- * @param ctx context of current task
- * @param call_args syscall << 40 | args
- * @param fd_to_cmp to compare with fd of current state, like `read, write, close`, etc.
- * @param fd_for_update to update the file's fd, for example, dup3 will update fd from `fd_to_cmp` to `fd_for_update`
- * @param net_info port << 32 | ip
- * @param flag whether compare with fd_to_cmp, some functions don't need comparison, so it will be set 0.
- * @return always 0, routine for ebpf
+/**
+ * 系统调用专用的入口处理函数，根据当前的状态查看是否会引起状态转移；
+ * 如果可能引起状态转移，则保存可能的目标状态，根据函数执行成功与否决定是否更新状态
+ *
+ * @param ctx 上下文结构体
+ * @param call_args 系统调用和最重要参数，syscall << 40 | args
+ * @param fd_to_cmp 用于和当前状态 fd 比较的 fd，如 read、write、dup3 等
+ * @param fd_for_update 用于更新当前状态中 fd 的
+ * @param flag 是否需要更新传入的 call_args 参数，比如 read 可能需要通过判断 fd 来确定参数
+ * @return 恒为 0，由 eBPF 规定
  */
-__always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
-                                    int fd_to_cmp, int fd_for_update, u8 flag) {
+static int do_entry(struct pt_regs *ctx, u64 call_args, int fd_to_cmp, int fd_for_update, u8 flag) {
 
     struct behav_t b = {}, *cur = NULL, *parent = NULL;
     struct task_struct *task = (struct task_struct *) bpf_get_current_task();
@@ -94,12 +83,10 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
     cur = state_behav.lookup(&b.pid);
 
     /*
-     * check if current task's behavior semantic has been saved.
-     * |- No + then check if current syscall and its arguments can cause state transition
-     * |     |- No, which means current state is useless
-     * |     +- Yes, which means this syscall can navigate current state to the next state by stt.
-     * |            Then generate and save a new state, it will run in state machine.
-     * +- Yes, back up the current behavior semantic, and try to get info for the next possible behavior semantic.
+     * 查看当前是否已经记入状态机，如果已经记入，则将当前的状态更新到 b 中；
+     * 如果还没有记入，则查看当前动作是否会引发状态转移，如果不会直接返回；
+     * b 将用来保存可能的下一个状态，而 cur 当前状态暂时不予改变，只有当前
+     * 动作完成并且没有报错再进行状态转移（在出口处理函数中）
      */
     if (!cur) {
         pre_state = call_args;
@@ -117,9 +104,17 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
         b.time = bpf_ktime_get_ns();
     }
 
-    /* check args of functions, like write(fd), connect(fd,...). */
+    /*
+     * 查看当前是否需要进行参数的更新，如 read、write 等需要判断 fd 是否是之前打开的文件描述符；
+     * 并根据 fd 更新参数，获得正确的状态转移条件
+     */
     if (flag) {
-        if (b.fd != -1 && fd_to_cmp == b.fd) call_args |= ARGS_EQL_FD;
+        if (b.fd != -1 && fd_to_cmp == b.fd) {
+            call_args |= ARGS_EQL_FD;
+            if (call_args == SYS_CALL_CLOSE) {
+                b.fd = -1;
+            }
+        }
         else if (fd_to_cmp == 0 || fd_to_cmp == 1) call_args |= ARGS_EQL_IO;
     }
     pre_state = ((u64)b.s.for_assign << 48) | call_args;
@@ -129,7 +124,6 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
         return 0;
     }
 
-    /* state0 means start, so just remain it. */
     if (!(*state)) {
         b.s.for_assign = 0;
         next_state.update(&b.pid, &b);
@@ -137,13 +131,7 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
     }
 
     b.s.for_assign = *state;
-//
-//    if (CHECK_FLAG(*state, FLAG_SOCKET)) {
-//        b.detail.sock.addr = (net_info & 0x00000000ffffffff);
-//        b.detail.sock.port = (net_info >> 32) & 0x000000000000ffff;
-//    }
 
-    // if fd_for_update >= 0, means it is an argument of syscall and need to be updated
     if (fd_for_update >= 0 && CHECK_FLAG(b.s.for_assign, FLAG_FD)) {
         b.fd = fd_for_update;
     }
@@ -152,24 +140,24 @@ __always_inline static int do_entry(struct pt_regs *ctx, u64 call_args,
     return 0;
 }
 
-/*
- * @param ctx context of task
- * @return always 0
+/**
+ * 根据函数的返回值（函数是否执行成功）决定是否更新状态信息；
+ * 如果需要更新，则先根据目标状态的 flag 来执行一定操作，
+ * 如新旧状态的信息传递，网络信息的保存等
  *
- * @details This function handles the next possible behavior semantic when function returns. If return-value is invalid,
- *          just abandon the possible behavior semantic.
+ * @param ctx 当前进程上下文
+ * @return 恒为 0，由 eBPF 决定
  */
-__always_inline static int do_return(struct pt_regs *ctx) {
+static int do_return(struct pt_regs *ctx) {
     int ret_val = PT_REGS_RC(ctx);
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct behav_t *cur = state_behav.lookup(&pid);
     struct behav_t *nex = next_state.lookup(&pid);
 
-    /* skip if no state recording or returning error */
     if (!nex) return 0;
     next_state.delete(&pid);
-    if (ret_val < 0) return 0;
-    if (cur && !nex->s.for_assign) {
+    if (ret_val < 0) return 0;  // 如果函数执行错误，则不进行状态信息的更新
+    if (cur && !nex->s.for_assign) {    // 有可能回到起始状态
         cur->s.for_assign = 0;
         return 0;
     }
@@ -182,15 +170,16 @@ __always_inline static int do_return(struct pt_regs *ctx) {
 
     struct behav_t *parent = state_behav.lookup(&(nex->ppid));
     if (parent && CHECK_FLAG(nex->s.for_assign, FLAG_PARENT)) {
-        parent->detail.remote.addr = nex->detail.remote.addr;
-        parent->detail.remote.port = nex->detail.remote.port;
-        parent->local.addr = nex->local.addr;
-        parent->local.port = nex->local.port;
+        parent->detail.net.remote.addr = nex->detail.net.remote.addr;
+        parent->detail.net.remote.port = nex->detail.net.remote.port;
+        parent->detail.net.local.addr = nex->detail.net.local.addr;
+        parent->detail.net.local.port = nex->detail.net.local.port;
         parent->s.for_assign = nex->s.for_assign;
         state_behav.delete(&pid);
         return 0;
     }
 
+    // 将父进程保存的网络套接字信息传递给当前子进程
     if (CHECK_FLAG(nex->s.for_assign, FLAG_CHILD)) {
         struct task_struct *task = (struct task_struct *) bpf_get_current_task();
         task = task->real_parent;
@@ -206,15 +195,16 @@ __always_inline static int do_return(struct pt_regs *ctx) {
             }
 
             accept_block.delete(&ppid);
-            nex->detail.remote.addr = net_info->remote.addr;
-            nex->detail.remote.port = net_info->remote.port;
-            nex->local.addr = net_info->local.addr;
-            nex->local.port = net_info->local.port;
+            nex->detail.net.remote.addr = net_info->remote.addr;
+            nex->detail.net.remote.port = net_info->remote.port;
+            nex->detail.net.local.addr = net_info->local.addr;
+            nex->detail.net.local.port = net_info->local.port;
             bpf_get_current_comm(&(nex->comm), sizeof(nex->comm));
             break;
         }
     }
 
+    // ssh 保存 accept 得到的套接字，防止被再次替换
     if (CHECK_FLAG(nex->s.for_assign, FLAG_ACCEPT)) {
         struct peer_net_t *net_info = accept_block.lookup(&(nex->ppid));
 
@@ -336,7 +326,7 @@ int syscall__connect_return(struct pt_regs *ctx) {
     return do_return(ctx);
 }
 
-// accept is listened by sshd as daemon, so should put it into state machine
+// 保存当前的 accept 状态，用于在内核中获取更精准的套接字信息
 int syscall__accept(struct pt_regs *ctx, int sockfd, struct sockaddr __user* addr) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct sockaddr_in *sa = (struct sockaddr_in*)addr;
@@ -352,6 +342,7 @@ int syscall__accept(struct pt_regs *ctx, int sockfd, struct sockaddr __user* add
     return 0;
 }
 
+// 如果当前 accept 失败，则将保存的套接字信息删除
 int syscall__accept_return(struct pt_regs *ctx) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     int ret_val = PT_REGS_RC(ctx);
@@ -364,16 +355,10 @@ int syscall__accept_return(struct pt_regs *ctx) {
         return 0;
     }
 
-//    struct behav_t b = {};
-//    bpf_get_current_comm(&b.comm, sizeof(b.comm));
-//    b.detail.sock.addr = daemon->addr;
-//    b.detail.sock.port = daemon->port;
-//    b.s.fr.flags = FLAG_SMT_SOCK;
-//    behavior.perf_submit(ctx, &b, sizeof(b));
-
     return 0;
 }
 
+// 进程退出，删除当前进程的状态信息
 int syscall_exit_group(struct pt_regs *ctx, int sig) {
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct behav_t *cur = state_behav.lookup(&pid);
@@ -384,7 +369,8 @@ int syscall_exit_group(struct pt_regs *ctx, int sig) {
     return 0;
 }
 
-/* kernel function to get inode */
+/* 以下都是内核函数的监控，为了获取更详细的文件信息，如 inode，文件短名字等，因此不要随意改动 */
+/* !!! ================ 禁止改动 ===================== !!! */
 
 int do_vfs_open(struct pt_regs *ctx, const struct path *path, struct file *file) {
 
@@ -533,66 +519,17 @@ int do_tcp_v4_connect_return(struct pt_regs *ctx) {
     u16 lport = skp->__sk_common.skc_num;
     u16 dport = skp->__sk_common.skc_dport;
 
-    cur->detail.remote.addr = skp->__sk_common.skc_daddr;
-    cur->local.addr         = skp->__sk_common.skc_rcv_saddr;
-    cur->detail.remote.port = ntohs(dport);
-    cur->local.port         = lport;
+    cur->detail.net.remote.addr = skp->__sk_common.skc_daddr;
+    cur->detail.net.local.addr  = skp->__sk_common.skc_rcv_saddr;
+    cur->detail.net.remote.port = ntohs(dport);
+    cur->detail.net.local.port  = lport;
 
     return 0;
 }
 
 int kretprobe__inet_csk_accept(struct pt_regs *ctx) {
-//    if (container_should_be_filtered()) {
-//        return 0;
-//    }
 
     struct sock *newsk = (struct sock *)PT_REGS_RC(ctx);
-//    u32 pid = bpf_get_current_pid_tgid() >> 32;
-//
-//    if (newsk == NULL)
-//        return 0;
-//
-//    // check this is TCP
-//    u16 protocol = 0;
-//    // workaround for reading the sk_protocol bitfield:
-//
-//    // Following comments add by Joe Yin:
-//    // Unfortunately,it can not work since Linux 4.10,
-//    // because the sk_wmem_queued is not following the bitfield of sk_protocol.
-//    // And the following member is sk_gso_max_segs.
-//    // So, we can use this:
-//    // bpf_probe_read_kernel(&protocol, 1, (void *)((u64)&newsk->sk_gso_max_segs) - 3);
-//    // In order to  diff the pre-4.10 and 4.10+ ,introduce the variables gso_max_segs_offset,sk_lingertime,
-//    // sk_lingertime is closed to the gso_max_segs_offset,and
-//    // the offset between the two members is 4
-//
-//    int gso_max_segs_offset = offsetof(struct sock, sk_gso_max_segs);
-//    int sk_lingertime_offset = offsetof(struct sock, sk_lingertime);
-//
-//
-//    // Since kernel v5.6 sk_protocol is its own u16 field and gso_max_segs
-//    // precedes sk_lingertime.
-//    if (sk_lingertime_offset - gso_max_segs_offset == 2)
-//        protocol = newsk->sk_protocol;
-//    else if (sk_lingertime_offset - gso_max_segs_offset == 4)
-//        // 4.10+ with little endian
-//#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-//        protocol = *(u8 *)((u64)&newsk->sk_gso_max_segs - 3);
-//    else
-//        // pre-4.10 with little endian
-//        protocol = *(u8 *)((u64)&newsk->sk_wmem_queued - 3);
-//#elif __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-//    // 4.10+ with big endian
-//        protocol = *(u8 *)((u64)&newsk->sk_gso_max_segs - 1);
-//    else
-//        // pre-4.10 with big endian
-//        protocol = *(u8 *)((u64)&newsk->sk_wmem_queued - 1);
-//#else
-//# error "Fix your compiler's __BYTE_ORDER__?!"
-//#endif
-//
-//    if (protocol != IPPROTO_TCP)
-//        return 0;
 
     u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct peer_net_t *net_info = accept_block.lookup(&pid);
