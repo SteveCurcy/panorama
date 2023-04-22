@@ -38,6 +38,7 @@
  *      Xu.Cao      2023-04-17  6.0.6                           1. 修改了 do_entry 和 do_return 的 __always_inline 属性，
  *                                                                 防止出现 inline 导致的二进制爆炸问题.
  *                                                              2. 增加了对 close 系统调用 fd 的处理，将 fd 置为 -1
+ *      Xu.Cao      2023-04-26  6.1.0                           将宏定义和代码剥离，由用户态程序完全控制
  */
 #include <uapi/linux/ptrace.h>
 #include <linux/dcache.h>
@@ -168,6 +169,7 @@ static int do_return(struct pt_regs *ctx) {
             nex->fd = ret_val;
     }
 
+    // 将当前进程的状态信息传给父进程并删除当前进程的信息
     struct behav_t *parent = state_behav.lookup(&(nex->ppid));
     if (parent && CHECK_FLAG(nex->s.for_assign, FLAG_PARENT)) {
         parent->detail.net.remote.addr = nex->detail.net.remote.addr;

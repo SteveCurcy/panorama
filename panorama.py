@@ -8,22 +8,26 @@
 #       <author>    <time>      <version>               <description>
 #       Xu.Cao      2023-04-13  6.0.5                   注释完善
 #       Xu.Cao      2023-04-17  6.0.6                   修改了现有数据结构，修复了数据定义 bug，CType 空间分配问题
+#       Xu.Cao      2023-04-26  6.1.0                   1. 实现数据定义和状态转移表与程序的剥离
+#                                                       2. 不再由用户输入参数控制，而是由配置文件控制（包括调试、输出文件、定义等）
 import re
 import sys
-
 from bcc import BPF
 import ctypes as ct
 import socket
 import struct
 import json
 import psutil
-import argparse
-from datetime import datetime, timedelta
-from threading import Timer, Lock, Thread
+from datetime import datetime
+from threading import Thread
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-d", "--debug", help="print more infos like states for debugging", action="store_true")
-args = parser.parse_args()
+# 解析配置文件
+with open("config.json", 'r') as conf:
+    configs = json.load(conf)
+debug = configs['debug']
+output_filename = configs['output']
+definitions_filename = configs['definitions']
+state_transition_table_filename = configs['state_transition_table']
 
 
 class FileT(ct.Structure):
@@ -98,8 +102,10 @@ def CHECK_FLAG(s: int, f: int) -> bool:
 
 # 根据宏定义，解析状态转移表并将其转为字典类型返回
 def get_state_table(definitions_) -> dict:
-    with open("state_transition_table.stt", 'r') as csv:
-        lines = csv.readlines()
+    global state_transition_table_filename
+
+    with open(state_transition_table_filename, 'r') as stt:
+        lines = stt.readlines()
     state_table = dict()
 
     for one_line in lines:
@@ -132,13 +138,16 @@ def get_behavior(op: int) -> str:
 
 
 def output_log(logs: list) -> None:
+    global out
     out.writelines(logs)
     out.flush()
 
 
 # 调用 BCC 提供的 API 将内核程序注入到对应位置
 def load_ebpf():
-    with open("definitions.json") as defs:
+    global definitions_filename
+
+    with open(definitions_filename, 'r') as defs:
         definitions_ = json.load(defs)
         for k in definitions_:
             for kk in definitions_[k]:
@@ -199,7 +208,7 @@ def load_ebpf():
 # 获取当前 Linux 系统上由哪些用户，获得 uid => username 的映射
 # 根据用户选项确定程序的日志输出目标位置，是终端还是文件
 def init(bpf, definitions_) -> tuple:
-    global args
+    global debug, output_filename
 
     mp = bpf["stt_behav"]
     stt = get_state_table(definitions_)
@@ -214,13 +223,11 @@ def init(bpf, definitions_) -> tuple:
             items = line.split(":")
             users_.update({int(items[2]): items[0]})
 
-    # determine which output target is used
-    log_file_name = "/var/log/syslog.log"
-    if args.debug:
+    if debug:
         out_ = sys.stdout
         group_size_ = 4
     else:
-        out_ = open(log_file_name, "w")
+        out_ = open(output_filename, "w")
         group_size_ = 20971  # output when logs size reach 20M
 
     return users_, out_, group_size_
@@ -249,7 +256,7 @@ op_map = {
 # 阈值时，才将其写入目标文件中。此外，存储字符串数组而不是将字符串拼接，
 # 以此减少由于字符串操作导致的耗时，批量写入文件也将更高效
 def print_event(cpu, data, size):
-    global log_size, out, group_size, logs_cache
+    global log_size, out, group_size, logs_cache, debug
 
     event = ct.cast(data, ct.POINTER(BehavT)).contents
     # items for logs
@@ -259,10 +266,9 @@ def print_event(cpu, data, size):
         logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
                        " ", get_behavior(event.s.fr.operate), " ", event.detail.file.name.decode(),
                        ":", str(event.detail.file.i_ino)]
-        if args.debug:
+        if debug:
             logs_cache += [" ", str(event.fd), " %x" % event.s.for_assign]
     else:
-        # laddr, daddr, lport, dport = 0, 0, 0, 0
         if event.s.fr.operate == definitions['operations']["OP_CONNECT"]:
             laddr = event.detail.net.local.addr
             lport = event.detail.net.local.port
@@ -276,14 +282,14 @@ def print_event(cpu, data, size):
         logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
                        " ", get_behavior(event.s.fr.operate),
                        "-by ", "{}:{}".format(socket.inet_ntoa(struct.pack('I', laddr)), lport)]
-        if args.debug:
+        if debug:
             logs_cache += [" %x" % event.s.for_assign]
         logs_cache.append("\n")
         log_size += 1
         logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
                        " ", get_behavior(event.s.fr.operate),
                        " ", "{}:{}".format(socket.inet_ntoa(struct.pack('I', daddr)), dport)]
-        if args.debug:
+        if debug:
             logs_cache += [" %x" % event.s.for_assign]
     logs_cache.append("\n")
 
@@ -295,7 +301,7 @@ def print_event(cpu, data, size):
 
 
 print("Bpf program loaded. Ctrl + C to stop...")
-if args.debug:
+if debug:
     print("%-26s %-6s %-6s %-10s %-6s TYPE" % ("TIME", "PPID", "PID", "USER", "TASK"))
 
 b["behavior"].open_perf_buffer(print_event)
@@ -307,6 +313,6 @@ while True:
         if log_size:
             out.writelines(logs_cache)
             out.flush()
-        if not args.debug:
+        if not debug:
             out.close()
         exit(0)

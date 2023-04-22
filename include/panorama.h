@@ -14,6 +14,7 @@
  *      <author>    <time>      <version>                       <description>
  *      Xu.Cao      2023-03-07  6.0.5                           规范化注释文档
  *      Xu.Cao      2023-04-19  6.0.6                           修改了现有数据结构，修复了数据定义 bug
+ *      Xu.Cao      2023-04-26  6.1.0                           删除宏定义部分，将宏定义交由用户空间程序决定
  */
 
 #ifndef LOGGER_H

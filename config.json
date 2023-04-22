@@ -1,0 +1,6 @@
+{
+  "debug": true,
+  "output": "/var/syslog.log",
+  "definitions": "definitions.json",
+  "state_transition_table": "state_transition_table.stt"
+}
