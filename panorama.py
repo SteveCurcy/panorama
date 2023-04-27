@@ -112,19 +112,18 @@ def get_state_table(definitions_) -> dict:
         if one_line.strip() == '' or one_line[0] == '#':
             continue
         item_lst = one_line.strip().split()
-        src = definitions_["states"][item_lst[0]] if item_lst[0] in definitions_["states"] else eval(item_lst[0])
-        syscall = definitions_["sys_calls"][item_lst[1]]
-        arg = definitions_["args"][item_lst[2]] if item_lst[2] in definitions_["args"] else eval(item_lst[2])
+        src = definitions_[item_lst[0]] if item_lst[0] in definitions_ else eval(item_lst[0])
+        syscall = definitions_[item_lst[1]]
+        arg = definitions_[item_lst[2]] if item_lst[2] in definitions_ else eval(item_lst[2])
         flags_lst = item_lst[3].split('|')
         flags = 0
         for flag in flags_lst:
-            if flag in definitions_['flags']:
-                flags |= definitions_["flags"][flag]
+            if flag in definitions_:
+                flags |= definitions_[flag]
             else:
                 flags |= eval(flag)
-        operate = definitions_["operations"][item_lst[4]] if item_lst[4] in definitions_["operations"] else eval(
-            item_lst[4])
-        dst = definitions_["states"][item_lst[5]] if item_lst[5] in definitions_["states"] else eval(item_lst[5])
+        operate = definitions_[item_lst[4]] if item_lst[4] in definitions_ else eval(item_lst[4])
+        dst = definitions_[item_lst[5]] if item_lst[5] in definitions_ else eval(item_lst[5])
         state_table.update({stt_key(src, syscall, arg): stt_val(flags, operate, dst)})
 
     return state_table
@@ -150,13 +149,11 @@ def load_ebpf():
     with open(definitions_filename, 'r') as defs:
         definitions_ = json.load(defs)
         for k in definitions_:
-            for kk in definitions_[k]:
-                definitions_[k][kk] = eval(definitions_[k][kk])
+            definitions_[k] = eval(definitions_[k])
 
     micro_list = []
     for k, v in dict(definitions_).items():
-        for kk, vv in v.items():
-            micro_list.append("#define {} {}".format(kk, vv))
+        micro_list.append("#define {} {}".format(k, v))
 
     with open("panorama.c") as fp:
         prog = fp.read()
@@ -239,16 +236,16 @@ b, definitions = load_ebpf()
 users, out, group_size = init(b, definitions)
 
 op_map = {
-    definitions['operations']["OP_CREATE"]: "create",
-    definitions['operations']["OP_REMOVE"]: "remove",
-    definitions['operations']["OP_READ"]: "read",
-    definitions['operations']["OP_WRITE"]: "write",
-    definitions['operations']["OP_COVER"]: "cover",
-    definitions['operations']["OP_SAVE"]: "save",
-    definitions['operations']["OP_MKDIR"]: "mkdir",
-    definitions['operations']["OP_RMDIR"]: "rmdir",
-    definitions['operations']["OP_CONNECT"]: "connect",
-    definitions['operations']["OP_ACCEPT"]: "accept"
+    definitions["OP_CREATE"]: "create",
+    definitions["OP_REMOVE"]: "remove",
+    definitions["OP_READ"]: "read",
+    definitions["OP_WRITE"]: "write",
+    definitions["OP_COVER"]: "cover",
+    definitions["OP_SAVE"]: "save",
+    definitions["OP_MKDIR"]: "mkdir",
+    definitions["OP_RMDIR"]: "rmdir",
+    definitions["OP_CONNECT"]: "connect",
+    definitions["OP_ACCEPT"]: "accept"
 }
 
 
@@ -262,14 +259,14 @@ def print_event(cpu, data, size):
     # items for logs
     time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9))
     task = "{} {}".format(event.ppid, event.pid)
-    if not CHECK_FLAG(event.s.for_assign, definitions['flags']["FLAG_SMT_SOCK"]):
+    if not CHECK_FLAG(event.s.for_assign, definitions["FLAG_SMT_SOCK"]):
         logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
                        " ", get_behavior(event.s.fr.operate), " ", event.detail.file.name.decode(),
                        ":", str(event.detail.file.i_ino)]
         if debug:
             logs_cache += [" ", str(event.fd), " %x" % event.s.for_assign]
     else:
-        if event.s.fr.operate == definitions['operations']["OP_CONNECT"]:
+        if event.s.fr.operate == definitions["OP_CONNECT"]:
             laddr = event.detail.net.local.addr
             lport = event.detail.net.local.port
             daddr = event.detail.net.remote.addr
