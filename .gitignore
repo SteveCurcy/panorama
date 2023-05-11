@@ -1,5 +1,0 @@
-# 排除所有隐藏文件
-.*
-
-# 不排除.gitignore
-!.gitignore
