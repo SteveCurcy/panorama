@@ -1,0 +1,3 @@
+[submodule "genor"]
+	path = genor
+	url = git@github.com:SteveCurcy/genor

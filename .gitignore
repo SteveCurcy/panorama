@@ -1,0 +1,6 @@
+.*
+reference_guide.md
+genor.backup
+
+!.gitignore
+!.gitmodules
