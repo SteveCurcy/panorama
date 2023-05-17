@@ -265,6 +265,14 @@ int syscall__close_return(struct pt_regs *ctx) {
     return do_return(ctx);
 }
 
+int syscall__unlink(struct pt_regs *ctx, const char __user *name) {
+    return do_entry(ctx, CALL_ARGS(SYS_CALL_UNLINK, 0), -1, -1, 0);
+}
+
+int syscall__unlink_return(struct pt_regs *ctx) {
+    return do_return(ctx);
+}
+
 int syscall__unlinkat(struct pt_regs *ctx, int dirfd, const char __user *name, int FLAG) {
     return do_entry(ctx, CALL_ARGS(SYS_CALL_UNLINKAT, FLAG), -1, -1, 0);
 }
@@ -278,6 +286,31 @@ int syscall__mkdirat(struct pt_regs *ctx, int dirfd, const char __user *name) {
 }
 
 int syscall__mkdirat_return(struct pt_regs *ctx) {
+    return do_return(ctx);
+}
+
+int syscall__mkdir(struct pt_regs *ctx, const char __user *name) {
+    return do_entry(ctx, CALL_ARGS(SYS_CALL_MKDIR, 0), -1, -1, 0);
+}
+
+int syscall__mkdir_return(struct pt_regs *ctx) {
+    return do_return(ctx);
+}
+
+int syscall__rmdir(struct pt_regs *ctx, const char __user *name) {
+    return do_entry(ctx, CALL_ARGS(SYS_CALL_RMDIR, 0), -1, -1, 0);
+}
+
+int syscall__rmdir_return(struct pt_regs *ctx, const char __user *name) {
+    return do_return(ctx);
+}
+
+int syscall__rename(struct pt_regs *ctx, const char __user *oldname,
+                    const char __user *newname) {
+    return do_entry(ctx, CALL_ARGS(SYS_CALL_RENAME, 0), -1, -1, 0);
+}
+
+int syscall__rename_return(struct pt_regs *ctx) {
     return do_return(ctx);
 }
 
@@ -307,6 +340,14 @@ int syscall__dup3(struct pt_regs *ctx, int oldfd, int newfd, int FLAG) {
 }
 
 int syscall__dup3_return(struct pt_regs *ctx) {
+    return do_return(ctx);
+}
+
+int syscall__dup2(struct pt_regs *ctx, int oldfd, int newfd) {
+    return do_entry(ctx, CALL_ARGS(SYS_CALL_DUP2, 0), oldfd, newfd, 1);
+}
+
+int syscall__dup2_return(struct pt_regs *ctx) {
     return do_return(ctx);
 }
 

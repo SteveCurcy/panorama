@@ -46,6 +46,11 @@
   "SYS_CALL_EXIT_GROUP": "0x09",
   "SYS_CALL_SOCKET": "0x0a",
   "SYS_CALL_CONNECT": "0x0b",
+  "SYS_CALL_RENAME": "0x0c",
+  "SYS_CALL_DUP2": "0x0d",
+  "SYS_CALL_MKDIR": "0x0e",
+  "SYS_CALL_RMDIR": "0x0f",
+  "SYS_CALL_UNLINK": "0x10",
   "ARGS_EQL_FD": "1",
   "ARGS_EQL_IO": "2"
 }

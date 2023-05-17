@@ -10,6 +10,9 @@
 #       Xu.Cao      2023-04-17  6.0.6                   修改了现有数据结构，修复了数据定义 bug，CType 空间分配问题
 #       Xu.Cao      2023-04-26  6.1.0                   1. 实现数据定义和状态转移表与程序的剥离
 #                                                       2. 不再由用户输入参数控制，而是由配置文件控制（包括调试、输出文件、定义等）
+#       Xu.Cao      2023-05-17  6.1.1                   1. 增加了对 mkdir,dup2,rmdir,rename,unlink 系统调用的支持 (Centos9)
+#                                                       2. 更新状态转移表，增加对 Centos9 的支持
+#
 import re
 import sys
 from bcc import BPF
@@ -167,11 +170,16 @@ def load_ebpf():
     b_.attach_kprobe(event=b_.get_syscall_fnname("read"), fn_name="syscall__read")
     b_.attach_kprobe(event=b_.get_syscall_fnname("write"), fn_name="syscall__write")
     b_.attach_kprobe(event=b_.get_syscall_fnname("close"), fn_name="syscall__close")
+    b_.attach_kprobe(event=b_.get_syscall_fnname("unlink"), fn_name="syscall__unlink")
     b_.attach_kprobe(event=b_.get_syscall_fnname("unlinkat"), fn_name="syscall__unlinkat")
     b_.attach_kprobe(event=b_.get_syscall_fnname("mkdirat"), fn_name="syscall__mkdirat")
+    b_.attach_kprobe(event=b_.get_syscall_fnname("mkdir"), fn_name="syscall__mkdir")
+    b_.attach_kprobe(event=b_.get_syscall_fnname("rmdir"), fn_name="syscall__rmdir")
+    b_.attach_kprobe(event=b_.get_syscall_fnname("rename"), fn_name="syscall__rename")
     b_.attach_kprobe(event=b_.get_syscall_fnname("renameat"), fn_name="syscall__renameat")
     b_.attach_kprobe(event=b_.get_syscall_fnname("renameat2"), fn_name="syscall__renameat2")
     b_.attach_kprobe(event=b_.get_syscall_fnname("dup3"), fn_name="syscall__dup3")
+    b_.attach_kprobe(event=b_.get_syscall_fnname("dup2"), fn_name="syscall__dup2")
     b_.attach_kprobe(event=b_.get_syscall_fnname("socket"), fn_name="syscall__socket")
     b_.attach_kprobe(event=b_.get_syscall_fnname("connect"), fn_name="syscall__connect")
     b_.attach_kprobe(event=b_.get_syscall_fnname("accept"), fn_name="syscall__accept")
@@ -180,11 +188,16 @@ def load_ebpf():
     b_.attach_kretprobe(event=b_.get_syscall_fnname("read"), fn_name="syscall__read_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("write"), fn_name="syscall__write_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("close"), fn_name="syscall__close_return")
+    b_.attach_kretprobe(event=b_.get_syscall_fnname("unlink"), fn_name="syscall__unlink_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("unlinkat"), fn_name="syscall__unlinkat_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("mkdirat"), fn_name="syscall__mkdirat_return")
+    b_.attach_kretprobe(event=b_.get_syscall_fnname("mkdir"), fn_name="syscall__mkdir_return")
+    b_.attach_kretprobe(event=b_.get_syscall_fnname("rmdir"), fn_name="syscall__rmdir_return")
+    b_.attach_kretprobe(event=b_.get_syscall_fnname("rename"), fn_name="syscall__rename_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("renameat"), fn_name="syscall__renameat_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("renameat2"), fn_name="syscall__renameat2_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("dup3"), fn_name="syscall__dup3_return")
+    b_.attach_kretprobe(event=b_.get_syscall_fnname("dup2"), fn_name="syscall__dup2_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("socket"), fn_name="syscall__socket_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("connect"), fn_name="syscall__connect_return")
     b_.attach_kretprobe(event=b_.get_syscall_fnname("accept"), fn_name="syscall__accept_return")
