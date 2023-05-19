@@ -447,6 +447,7 @@ int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct
 /* vfs_rename */
 /* here we can consider that the source and target inode will be the
  * same in the same disk */
+#ifdef LATEST_KERNEL
 int do_vfs_rename(struct pt_regs *ctx, struct renamedata *rd) {
 
     u32 pid = bpf_get_current_pid_tgid() >> 32;
@@ -476,6 +477,38 @@ int do_vfs_rename(struct pt_regs *ctx, struct renamedata *rd) {
 
     return 0;
 }
+#else
+int do_vfs_rename(struct pt_regs *ctx, struct inode *old_dir, struct dentry *old_dentry,
+                  struct inode *new_dir, struct dentry *new_dentry,
+                  struct inode **delegated_inode, unsigned int flags) {
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct behav_t *cur = next_state.lookup(&pid);
+
+    if (!cur) return 0;
+    if (CHECK_FLAG(cur->s.for_assign, FLAG_RNM_SRC)) {
+        cur->detail.file.i_ino = old_dentry->d_inode->i_ino;
+        u16 tmp_op = cur->s.fr.operate;
+        cur->s.fr.operate = OP_REMOVE;
+        bpf_probe_read_kernel_str(cur->detail.file.name, sizeof(cur->detail.file.name), old_dentry->d_iname);
+        behavior.perf_submit(ctx, cur, sizeof(*cur));
+        cur->s.fr.operate = tmp_op;
+    }
+    if (CHECK_FLAG(cur->s.for_assign, FLAG_FILE_NAME)) {
+        bpf_probe_read_kernel_str(cur->detail.file.name, sizeof(cur->detail.file.name), new_dentry->d_iname);
+        if (new_dentry->d_inode->i_ino) {
+            // cover a file, so output the covered file
+            cur->detail.file.i_ino = new_dentry->d_inode->i_ino;
+            // cur->s.for_assign = (cur->s.for_assign & 0xffffffffff00ffff) | ((u64)OP_COVER << 32);
+            cur->s.fr.operate = OP_REMOVE;
+            behavior.perf_submit(ctx, cur, sizeof(*cur));
+            cur->s.fr.operate = OP_COVER;
+        }
+        cur->detail.file.i_ino = old_dentry->d_inode->i_ino;
+    }
+
+    return 0;
+}
+#endif
 
 int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
         struct inode *dir, struct dentry *dentry, umode_t mode) {
