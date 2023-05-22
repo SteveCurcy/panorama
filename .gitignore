@@ -1,6 +1,8 @@
 .*
 reference_guide.md
-genor.backup
+cmake*
+CMake*
+include/bcc
 
 !.gitignore
 !.gitmodules

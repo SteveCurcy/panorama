@@ -39,7 +39,8 @@
  *                                                                 防止出现 inline 导致的二进制爆炸问题.
  *                                                              2. 增加了对 close 系统调用 fd 的处理，将 fd 置为 -1
  *      Xu.Cao      2023-04-26  6.1.0                           将宏定义和代码剥离，由用户态程序完全控制
- */
+ *      Xu.Cao      2023-05-16  6.1.3                           增加了对早期内核函数的支持，如 vfs_unlink, vfs_rename, vfs_mkdir 等
+*/
 #include <uapi/linux/ptrace.h>
 #include <linux/dcache.h>
 #include <linux/socket.h>
@@ -52,7 +53,7 @@
 #include "include/ebpf_string.h"
 #include "include/panorama.h"
 
-[MICRO_DEFINITIONS]
+// [MICRO_DEFINITIONS]
 
 BPF_HASH(stt_behav, u64, u64, 4096);                // state transition table (stt) of behavior
 BPF_HASH(state_behav, u32, struct behav_t, 4096);   // pid -> state, state of behavior
@@ -186,7 +187,9 @@ static int do_return(struct pt_regs *ctx) {
         struct task_struct *task = (struct task_struct *) bpf_get_current_task();
         task = task->real_parent;
         u32 ppid = 0;
-        for (int i = 0; i < 4 && task; i++) {
+        #pragma unroll(4)
+        for (int i = 0; i < 4; i++) {
+            if (NULL == task) break;
             ppid = task->pid;
             if (ppid == 1) break;
 
@@ -429,6 +432,7 @@ int do_vfs_open(struct pt_regs *ctx, const struct path *path, struct file *file)
     return 0;
 }
 
+#ifdef LATEST_KERNEL
 int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct inode *dir,
                   struct dentry *dentry, struct inode **delegated_inode) {
 
@@ -443,6 +447,21 @@ int do_vfs_unlink(struct pt_regs *ctx, struct user_namespace *mnt_userns, struct
 
     return 0;
 }
+#else
+int do_vfs_unlink(struct pt_regs* ctx, struct inode *dir,
+        struct dentry *dentry, struct inode **delegated_inode) {
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct behav_t *cur = next_state.lookup(&pid);
+
+    if (!cur) return 0;
+    if (CHECK_FLAG(cur->s.for_assign, FLAG_FILE_NAME)) {
+        cur->detail.file.i_ino = dentry->d_inode->i_ino;
+        bpf_probe_read_kernel_str(cur->detail.file.name, sizeof(cur->detail.file.name), dentry->d_iname);
+    }
+
+    return 0;
+}
+#endif
 
 /* vfs_rename */
 /* here we can consider that the source and target inode will be the
@@ -510,6 +529,7 @@ int do_vfs_rename(struct pt_regs *ctx, struct inode *old_dir, struct dentry *old
 }
 #endif
 
+#ifdef LATEST_KERNEL
 int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
         struct inode *dir, struct dentry *dentry, umode_t mode) {
 
@@ -521,6 +541,18 @@ int do_vfs_mkdir(struct pt_regs *ctx, struct user_namespace *mnt_userns,
 
     return 0;
 }
+#else
+int do_vfs_mkdir(struct pt_regs *ctx, struct inode *dir, struct dentry *dentry, umode_t mode) {
+
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+    struct behav_t *cur = next_state.lookup(&pid);
+
+    if (!cur) return 0;
+    tmp_dentry.update(&pid, &dentry);
+
+    return 0;
+}
+#endif
 
 int do_vfs_mkdir_return(struct pt_regs *ctx) {
 

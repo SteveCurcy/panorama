@@ -10,7 +10,7 @@
 #       Xu.Cao      2023-04-17  6.0.6                   修改了现有数据结构，修复了数据定义 bug，CType 空间分配问题
 #       Xu.Cao      2023-04-26  6.1.0                   1. 实现数据定义和状态转移表与程序的剥离
 #                                                       2. 不再由用户输入参数控制，而是由配置文件控制（包括调试、输出文件、定义等）
-#       Xu.Cao      2023-05-17  6.1.1                   1. 增加了对 mkdir,dup2,rmdir,rename,unlink 系统调用的支持 (Centos9)
+#       Xu.Cao      2023-05-17  6.1.3                   1. 增加了对 mkdir,dup2,rmdir,rename,unlink 系统调用的支持 (Centos9)
 #                                                       2. 更新状态转移表，增加对 Centos9 的支持
 #
 import re
@@ -163,7 +163,7 @@ def load_ebpf():
     if prog is None or prog == "":
         print("file open error")
         exit(-1)
-    prog = re.sub(r'\[MICRO_DEFINITIONS]', '\n'.join(micro_list), prog, count=1)
+    prog = re.sub(r'// \[MICRO_DEFINITIONS]', '\n'.join(micro_list), prog, count=1)
     # operations of eBPF
     b_ = BPF(text=prog)
     b_.attach_kprobe(event=b_.get_syscall_fnname("openat"), fn_name="syscall__openat")
