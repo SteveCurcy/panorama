@@ -50,7 +50,6 @@
 #include <bcc/proto.h>
 #include <linux/fs.h>
 #include <linux/sched.h>
-#include "include/ebpf_string.h"
 #include "include/panorama.h"
 
 // [MICRO_DEFINITIONS]
