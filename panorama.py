@@ -12,6 +12,7 @@
 #                                                       2. 不再由用户输入参数控制，而是由配置文件控制（包括调试、输出文件、定义等）
 #       Xu.Cao      2023-05-17  6.1.3                   1. 增加了对 mkdir,dup2,rmdir,rename,unlink 系统调用的支持 (Centos9)
 #                                                       2. 更新状态转移表，增加对 Centos9 的支持
+#       Xu.Cao      2023-06-02  6.1.5                   增加了对进程的行为描述，如：fake_cp(CP),即指明 fake_cp 正在进行拷贝行为
 #
 import re
 import sys
@@ -31,6 +32,7 @@ debug = configs['debug']
 output_filename = configs['output']
 definitions_filename = configs['definitions']
 state_transition_table_filename = configs['state_transition_table']
+behave_name = dict()
 
 
 class FileT(ct.Structure):
@@ -147,7 +149,7 @@ def output_log(logs: list) -> None:
 
 # 调用 BCC 提供的 API 将内核程序注入到对应位置
 def load_ebpf():
-    global definitions_filename
+    global definitions_filename, behave_name
 
     with open(definitions_filename, 'r') as defs:
         definitions_ = json.load(defs)
@@ -157,6 +159,8 @@ def load_ebpf():
     micro_list = []
     for k, v in dict(definitions_).items():
         micro_list.append("#define {} {}".format(k, v))
+        if "STATE" in k and k != "STATE_START":
+            behave_name[v] = k[6:]
 
     with open("panorama.c") as fp:
         prog = fp.read()
@@ -266,14 +270,16 @@ op_map = {
 # 阈值时，才将其写入目标文件中。此外，存储字符串数组而不是将字符串拼接，
 # 以此减少由于字符串操作导致的耗时，批量写入文件也将更高效
 def print_event(cpu, data, size):
-    global log_size, out, group_size, logs_cache, debug
+    global log_size, out, group_size, logs_cache, debug, behave_name
 
     event = ct.cast(data, ct.POINTER(BehavT)).contents
     # items for logs
     time = str(datetime.fromtimestamp(boot_time + int(event.time) / 1e9))
     task = "{} {}".format(event.ppid, event.pid)
+    task_name = "{}({})".format(event.comm.decode(), behave_name[event.s.fr.state]) if behave_name.get(
+        event.s.fr.state) else event.comm.decode()
     if not CHECK_FLAG(event.s.for_assign, definitions["FLAG_SMT_SOCK"]):
-        logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
+        logs_cache += [time, " ", task, " ", users[event.uid], " ", task_name,
                        " ", get_behavior(event.s.fr.operate), " ", event.detail.file.name.decode(),
                        ":", str(event.detail.file.i_ino)]
         if debug:
@@ -289,7 +295,7 @@ def print_event(cpu, data, size):
             lport = event.detail.net.remote.port
             daddr = event.detail.net.local.addr
             dport = event.detail.net.local.port
-        logs_cache += [time, " ", task, " ", users[event.uid], " ", event.comm.decode(),
+        logs_cache += [time, " ", task, " ", users[event.uid], " ", task_name,
                        " ", get_behavior(event.s.fr.operate),
                        "-by ", "{}:{}".format(socket.inet_ntoa(struct.pack('I', laddr)), lport)]
         if debug:
