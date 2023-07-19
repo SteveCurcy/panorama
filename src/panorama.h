@@ -1,22 +1,7 @@
-/*
- * @author  Xu.Cao
- * @date    2023-03-03.
- * @details define the state struct to save the behavior's semantics.
- *
- * @structures
- *      `struct p_state_t` is to save the state code, it represents the behavior's semantic state.
- *          `struct for_read_t` is easy to get the items in state.
- *      `struct net_t` is to save a socket, which is '(IP, port)'.
- *      `struct file_t` is to save a file's info, includes name and inode.
- *      `union detail_t` will save the object which task handles, and only save one of the file or socket.
- *      `struct behav_t` saves behavior's semantics, which includes resources info, task info, user info and state info.
- * @history
- *      <author>    <time>      <version>                       <description>
- *      Xu.Cao      2023-03-07  6.0.5                           规范化注释文档
- *      Xu.Cao      2023-04-19  6.0.6                           修改了现有数据结构，修复了数据定义 bug
- *      Xu.Cao      2023-04-26  6.1.0                           删除宏定义部分，将宏定义交由用户空间程序决定
+/* 
+ * License-Identifier: BSD-3
+ * Copyright (c) 2023 Steve.Curcy
  */
-
 #ifndef PANORAMA_H
 #define PANORAMA_H
 

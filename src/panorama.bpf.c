@@ -1,5 +1,5 @@
 /* 
- * License-Identifier: GPL-2.0
+ * License-Identifier: BSD-3
  * Copyright (c) 2023 Steve.Curcy
  */
 #include "vmlinux.h"
@@ -21,20 +21,20 @@ struct {
 	__uint(max_entries, 4096);
 	__type(key, u64);
 	__type(value, u32);
-} stt SEC(".maps");
+} maps_stt SEC(".maps");
 /* 保存当前的和可能的下一个状态信息 */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, pid_t);
 	__type(value, struct p_state_t);
-} cur SEC(".maps");
+} maps_cur SEC(".maps");
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, pid_t);
 	__type(value, struct p_state_t);
-} nex SEC(".maps");
+} maps_nex SEC(".maps");
 
 /* 存放 accept 获取的连接块的信息，最多支持同时 64 个连接请求;
  * 放在 QUEUE 结构中，请求的线程依次从中获取 */
@@ -42,34 +42,34 @@ struct {
 	__uint(type, BPF_MAP_TYPE_QUEUE);
 	__uint(max_entries, 64);
 	__type(value, struct p_socket_t);
-} accept_block SEC(".maps");
+} maps_accept_block SEC(".maps");
 /* 保存临时 sock 结构体 */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 64);
 	__type(key, pid_t);
 	__type(value, struct sock*);
-} temp_sock SEC(".maps");
+} maps_temp_sock SEC(".maps");
 /* 存储临时的 fd 信息 */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 2048);
+	__uint(max_entries, 1024);
 	__type(key, pid_t);
 	__type(value, __u64);
-} temp_fd SEC(".maps");
+} maps_temp_fd SEC(".maps");
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, pid_t);
 	__type(value, struct p_finfo_t);
-} temp_file SEC(".maps");
+} maps_temp_file SEC(".maps");
 /* 临时保存 dentry 信息 */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, pid_t);
 	__type(value, struct dentry*);
-} temp_dentry SEC(".maps");
+} maps_temp_dentry SEC(".maps");
 /* 低版本中缺少 struct renamedata 数据结构，
  * 因此为了获取源和目的 dentry 开启辅助临时变量 */
 #ifdef __KERNEL_VERSION
@@ -79,7 +79,7 @@ struct {
 	__uint(max_entries, 1024);
 	__type(key, pid_t);
 	__type(value, void*);
-} temp_ddentry SEC(".maps");
+} maps_temp_ddentry SEC(".maps");
 #endif
 #endif
 /* 用于保存进程打开的文件的相关信息，包括文件名、inode、读写数量等
@@ -89,14 +89,21 @@ struct {
 	__uint(max_entries, 10240);
 	__type(key, u64);
 	__type(value, struct p_finfo_t);
-} files SEC(".maps");
+} maps_files SEC(".maps");
 /* 用于过滤监控程序 panorama 本身的行为 */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1);
 	__type(key, __u16);
 	__type(value, pid_t);
-} self_pid SEC(".maps");
+} maps_self_pid SEC(".maps");
+/* 用于保存需要过滤的进程的哈希值 */
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 64);
+	__type(key, __u64);
+	__type(value, __u8);
+} maps_filter_hash SEC(".maps");
 /* 事件类型，将日志信息传输到用户空间 */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
@@ -128,9 +135,18 @@ static void clear_state(pid_t pid) {
 #pragma unroll(1024)
     for (int i = 0; i < 1024; i++) {
         key = (key & 0xffffffff00000000) | i;
-        err = bpf_map_delete_elem(&files, &key);
+        err = bpf_map_delete_elem(&maps_files, &key);
     }
-    bpf_map_delete_elem(&cur, &pid);
+    bpf_map_delete_elem(&maps_cur, &pid);
+}
+
+__always_inline static bool if_filt() {
+	char comm[32];
+	bpf_get_current_comm(&comm, 32);
+	__u64 hash_value = str_hash(comm);
+
+	__u8 *dummy = bpf_map_lookup_elem(&maps_filter_hash, &hash_value);
+	return (dummy != 0);
 }
 
 /**
@@ -145,39 +161,36 @@ static void clear_state(pid_t pid) {
 static int tracepoint__syscalls__sys_enter(__u16 syscall_id, __u32 flags) {
 	
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid), s;
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid), s;
 	struct task_struct *task = (struct task_struct *) bpf_get_current_task();
 	pid_t ppid = BPF_CORE_READ(task, real_parent, tgid);
 	NEW_STATE(s, ppid, 0);
 
-	// char comm[32];
-	// bpf_get_current_comm(&comm, 32);
-	// if (bpf_strcmp(comm, "cat")) return 0;
-
 	if (!cur_state_ptr) cur_state_ptr = &s;
 	if (!cur_state_ptr) return 0;
+	if (if_filt()) return 0;
 
 	/* 查看是否会引起状态转移，如果不能则直接返回 */
 	__u64 trigger_key = STT_KEY(cur_state_ptr->state_code, syscall_id, flags);
-	__u32 *next_state_code = bpf_map_lookup_elem(&stt, &trigger_key);
+	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &trigger_key);
 	if (!next_state_code) return 0;
 
 	/* 存储下一个可能的状态 */
 	s.state_code = *next_state_code;
-	bpf_map_update_elem(&nex, &pid, &s, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_nex, &pid, &s, BPF_NOEXIST);
 	
 	return pid;
 }
 static int tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 
-	bpf_map_delete_elem(&nex, &pid);
+	bpf_map_delete_elem(&maps_nex, &pid);
 	if (!next_state_ptr || ret < 0) return 0;
 
 	/* 如果当前系统调用成功，则更新对应的状态信息 */
-	bpf_map_update_elem(&cur, &pid, next_state_ptr, BPF_ANY);
+	bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_ANY);
 
 	return pid;
 }
@@ -187,14 +200,14 @@ static int tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
  * int openat(int dfd, const char *filename, int flags, umode_t mode);
  * 
  * 进入后，首先判断当前的状态码能否引起状态转移，（第一次调用时，状态码为 0），
- * 如果可以，则将状态保存到 nex 中，其中存储可能的下一个状态（因为可能有调用失败的情况）
+ * 如果可以，则将状态保存到 maps_nex 中，其中存储可能的下一个状态（因为可能有调用失败的情况）
  */
 SEC("tp/syscalls/sys_enter_openat")
 int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx) {
 
 	struct task_struct *task = (struct task_struct *) bpf_get_current_task();
 	__u32 pid = BPF_CORE_READ(task, tgid), ppid = BPF_CORE_READ(task, real_parent, tgid);
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid), s;
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid), s;
 	struct p_finfo_t new_file_info;
 	__u32 stt_flags = 0;
 	/* 从上下文中获取系统调用参数 */
@@ -205,8 +218,9 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 	if (flags == O_CLOEXEC) return 0;
 	/* 防止将监控程序本身输出 */
 	__u16 index = 0;
-	pid_t *_pid = bpf_map_lookup_elem(&self_pid, &index);
+	pid_t *_pid = bpf_map_lookup_elem(&maps_self_pid, &index);
 	if (!_pid || *_pid == pid) return 0;
+	if (if_filt()) return 0;
 
 	/* 根据打开方式获取状态转移标志字段 */
 	__builtin_memset(&new_file_info, 0, sizeof(new_file_info));
@@ -226,16 +240,16 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 
 	/* 获取下一个状态的状态码，无法获取说明不能进行状态转移，直接返回 */
 	__u64 trigger_key = (__u64) cur_state_ptr->state_code << 32 | (__u64) SYSCALL_OPENAT << 22 | stt_flags;
-	__u32 *next_state_code = bpf_map_lookup_elem(&stt, &trigger_key);
+	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &trigger_key);
 	if (!next_state_code) return 0;
 
 	/* 暂存文件信息结构，通过内核函数将其补充完整 */
 	__u64 file_key = (__u64) pid << 32 | 0xffffffff;
-	bpf_map_update_elem(&files, &file_key, &new_file_info, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_files, &file_key, &new_file_info, BPF_NOEXIST);
 
 	/* 更新下一个可能的状态信息 */
 	s.state_code = *next_state_code;
-	bpf_map_update_elem(&nex, &pid, &s, BPF_ANY);
+	bpf_map_update_elem(&maps_nex, &pid, &s, BPF_ANY);
 
 	return 0;
 }
@@ -244,23 +258,23 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	__u64 finfo_key = ((__u64) pid << 32) | 0xffffffff;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
-	struct p_finfo_t *new_finfo_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	struct p_finfo_t *new_finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	long ret = BPF_CORE_READ(ctx, ret), err = 0;
 
 	/* 必须要删除的临时变量放在指针非空判断之前，
 	 * 防止因逻辑错误或者忘记删除而导致的资源浪费 */
-	bpf_map_delete_elem(&files, &finfo_key);	// 删除临时的文件信息
-	bpf_map_delete_elem(&nex, &pid);			// 删除下一个可能的状态
+	bpf_map_delete_elem(&maps_files, &finfo_key);	// 删除临时的文件信息
+	bpf_map_delete_elem(&maps_nex, &pid);			// 删除下一个可能的状态
 	if (!next_state_ptr || !new_finfo_ptr || ret < 0) return 0;
 
 	/* 更新文件信息 */
 	finfo_key = ((__u64) pid << 32) | ret;
-	err = bpf_map_update_elem(&files, &finfo_key, new_finfo_ptr, BPF_NOEXIST);
+	err = bpf_map_update_elem(&maps_files, &finfo_key, new_finfo_ptr, BPF_NOEXIST);
 	
 	/* 由于标准输出也会导致状态机的变化，因此在打开文件时，
 	 * 在初始状态下，自动将标准输出也添加到文件信息 map 中 */
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) {
 		struct p_finfo_t stdout;
 		__builtin_memset(&stdout, 0, sizeof(stdout));
@@ -270,11 +284,11 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 		stdout.operation = OP_WRITE;
 		stdout.type = S_IFCHR;
 		__u64 stdout_key = ((__u64) pid << 32) | 1;
-		err = bpf_map_update_elem(&files, &stdout_key, &stdout, BPF_NOEXIST);
+		err = bpf_map_update_elem(&maps_files, &stdout_key, &stdout, BPF_NOEXIST);
 	}
 
 	/* 更新状态信息 */
-	err = bpf_map_update_elem(&cur, &pid, next_state_ptr, BPF_ANY);
+	err = bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_ANY);
 
 	return 0;
 }
@@ -285,11 +299,11 @@ int tracepoint__syscalls__sys_enter_read(struct trace_event_raw_sys_enter *ctx) 
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	int fd = BPF_CORE_READ(ctx, args[0]);
-	bpf_map_update_elem(&temp_fd, &pid, &fd, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_NOEXIST);
 
 	return 0;
 }
@@ -297,15 +311,15 @@ SEC("tp/syscalls/sys_exit_read")
 int tracepoint__syscalls__sys_exit_read(struct trace_event_raw_sys_exit *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	int *fd = (int *) bpf_map_lookup_elem(&temp_fd, &pid);
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	int *fd = (int *) bpf_map_lookup_elem(&maps_temp_fd, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	ssize_t read_size = BPF_CORE_READ(ctx, ret);
 
-	bpf_map_delete_elem(&temp_fd, &pid);
+	bpf_map_delete_elem(&maps_temp_fd, &pid);
 	if (!fd || !cur_state_ptr) return 0;
 
 	__u64 finfo_key = ((__u64) pid << 32) | *fd;
-	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_ptr)
 		return 0;
 
@@ -322,7 +336,7 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	int fd = BPF_CORE_READ(ctx, args[0]);
 	__u64 finfo_key = ((__u64) pid << 32) | fd;
-	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 
 	if (!finfo_ptr) return 0;
 
@@ -330,7 +344,7 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	__u32 ret = tracepoint__syscalls__sys_enter(SYSCALL_WRITE, (fd == 1 && finfo_ptr->type == S_IFCHR)?1:0);
 	if (!ret) return 0;
 
-	bpf_map_update_elem(&temp_fd, &pid, &fd, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_NOEXIST);
 
 	return 0;
 }
@@ -341,13 +355,13 @@ int tracepoint__syscalls__sys_exit_write(struct trace_event_raw_sys_exit *ctx) {
 	pid_t pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_WRITE);
 	if (!pid) return 0;
 
-	int *fd = bpf_map_lookup_elem(&temp_fd, &pid);
+	int *fd = bpf_map_lookup_elem(&maps_temp_fd, &pid);
 
-	bpf_map_delete_elem(&temp_fd, &pid);
+	bpf_map_delete_elem(&maps_temp_fd, &pid);
 	if (!fd) return 0;
 
 	__u64 finfo_key = ((__u64) pid << 32) | *fd;
-	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_ptr) return 0;
 
 	finfo_ptr->tx += ret;
@@ -362,11 +376,11 @@ int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	int fd = BPF_CORE_READ(ctx, args[0]);
-	bpf_map_update_elem(&temp_fd, &pid, &fd, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_NOEXIST);
 
 	return 0;
 }
@@ -374,20 +388,20 @@ SEC("tp/syscalls/sys_exit_close")
 int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
-	int *fd = bpf_map_lookup_elem(&temp_fd, &pid);
-	long read_size = BPF_CORE_READ(ctx, ret);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
+	int *fd = bpf_map_lookup_elem(&maps_temp_fd, &pid);
+	long ret = BPF_CORE_READ(ctx, ret);
 
-	bpf_map_delete_elem(&temp_fd, &pid);
-	if (!fd || !cur_state_ptr || read_size < 0) return 0;
+	bpf_map_delete_elem(&maps_temp_fd, &pid);
+	if (!fd || !cur_state_ptr || ret < 0) return 0;
 
 	__u64 finfo_key = (__u64) pid << 32 | *fd;
 
 	/* 文件关闭，将对应的文件信息删除 */
-	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_ptr) return 0;
 
-	bpf_map_delete_elem(&files, &finfo_key);
+	bpf_map_delete_elem(&maps_files, &finfo_key);
 	if (!(finfo_ptr->op_cnt) && cur_state_ptr->state_code == 1) {
 		/* 如果打开文件又关闭，但是没有操作过，并且状态码是 1，直接返回初始状态 */
 		cur_state_ptr->state_code = 0;
@@ -553,13 +567,13 @@ int tracepoint__syscalls__sys_enter_dup2(struct trace_event_raw_sys_enter *ctx) 
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	int oldfd = BPF_CORE_READ(ctx, args[0]);
 	int newfd = BPF_CORE_READ(ctx, args[1]);
 	__u64 tmpfds = (__u64) oldfd << 32 | newfd;
-	bpf_map_update_elem(&temp_fd, &pid, &tmpfds, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_fd, &pid, &tmpfds, BPF_NOEXIST);
 
 	return 0;
 }
@@ -567,23 +581,23 @@ SEC("tp/syscalls/sys_exit_dup2")
 int tracepoint__syscalls__sys_exit_dup2(struct trace_event_raw_sys_exit *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
-	__u64 *tmpfds = bpf_map_lookup_elem(&temp_fd, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
+	__u64 *tmpfds = bpf_map_lookup_elem(&maps_temp_fd, &pid);
 	long ret = BPF_CORE_READ(ctx, ret);
 
-	bpf_map_delete_elem(&temp_fd, &pid);
+	bpf_map_delete_elem(&maps_temp_fd, &pid);
 	if (!tmpfds || !cur_state_ptr || ret < 0) return 0;
 
 	// 取出原 fd 对应的文件信息
 	__u64 finfo_key = ((__u64) pid << 32) | (*tmpfds >> 32);
-	struct p_finfo_t *finfo_value = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_value = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_value) return 0;
 
 	// 将文件信息更新到新 fd 上
-	bpf_map_delete_elem(&files, &finfo_key);
+	bpf_map_delete_elem(&maps_files, &finfo_key);
 	finfo_key = ((__u64) pid << 32) | (*tmpfds & 0xffffffff);
 	finfo_value->op_cnt++;
-	bpf_map_update_elem(&files, &finfo_key, finfo_value, BPF_ANY);
+	bpf_map_update_elem(&maps_files, &finfo_key, finfo_value, BPF_ANY);
 
 	return 0;
 }
@@ -594,13 +608,13 @@ int tracepoint__syscalls__sys_enter_dup3(struct trace_event_raw_sys_enter *ctx) 
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	int oldfd = BPF_CORE_READ(ctx, args[0]);
 	int newfd = BPF_CORE_READ(ctx, args[1]);
 	__u64 tmpfds = (__u64) oldfd << 32 | newfd;
-	bpf_map_update_elem(&temp_fd, &pid, &tmpfds, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_fd, &pid, &tmpfds, BPF_NOEXIST);
 
 	return 0;
 }
@@ -608,23 +622,23 @@ SEC("tp/syscalls/sys_exit_dup3")
 int tracepoint__syscalls__sys_exit_dup3(struct trace_event_raw_sys_exit *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
-	__u64 *tmpfds = bpf_map_lookup_elem(&temp_fd, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
+	__u64 *tmpfds = bpf_map_lookup_elem(&maps_temp_fd, &pid);
 	long ret = BPF_CORE_READ(ctx, ret);
 
-	bpf_map_delete_elem(&temp_fd, &pid);
+	bpf_map_delete_elem(&maps_temp_fd, &pid);
 	if (!tmpfds || !cur_state_ptr || ret < 0) return 0;
 
 	// 取出原 fd 对应的文件信息
 	__u64 finfo_key = ((__u64) pid << 32) | (*tmpfds >> 32);
-	struct p_finfo_t *finfo_value = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_finfo_t *finfo_value = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_value) return 0;
 
 	// 将文件信息更新到新 fd 上
-	bpf_map_delete_elem(&files, &finfo_key);
+	bpf_map_delete_elem(&maps_files, &finfo_key);
 	finfo_key = ((__u64) pid << 32) | (*tmpfds & 0xffffffff);
 	finfo_value->op_cnt++;
-	bpf_map_update_elem(&files, &finfo_key, finfo_value, BPF_ANY);
+	bpf_map_update_elem(&maps_files, &finfo_key, finfo_value, BPF_ANY);
 
 	return 0;
 }
@@ -650,12 +664,12 @@ SEC("tp/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&cur, &pid);
+	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	/* 首先查看能否引起状态转移 */
 	__u64 cur_state = STT_KEY(cur_state_ptr->state_code, SYSCALL_CONNECT, 0);
-	__u32 *next_state_code = bpf_map_lookup_elem(&stt, &cur_state);
+	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &cur_state);
 	if (!next_state_code) return 0;
 
 	/* 创建一个临时的套接字文件信息，通过内核函数获取具体详细信息；
@@ -665,7 +679,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 
 	struct p_state_t s;
 	NEW_STATE(s, cur_state_ptr->ppid, *next_state_code);
-	long err = bpf_map_update_elem(&nex, &pid, &s, BPF_NOEXIST);
+	long err = bpf_map_update_elem(&maps_nex, &pid, &s, BPF_NOEXIST);
 	if (err < 0) return 0;
 
 	__builtin_memset(&new_sock_info, 0, sizeof(new_sock_info));
@@ -674,7 +688,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	new_sock_info.open_time = bpf_ktime_get_boot_ns();
 
 	__u64 finfo_key = (__u64) pid << 32 | 0xffffffff;
-	bpf_map_update_elem(&files, &finfo_key, &new_sock_info, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_files, &finfo_key, &new_sock_info, BPF_NOEXIST);
 
 	return 0;
 }
@@ -686,11 +700,11 @@ int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx)
 	long ret = BPF_CORE_READ(ctx, ret);
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	__u64 finfo_key = ((__u64) pid << 32) | 0xffffffff;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
-	struct p_finfo_t *sock_info_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	struct p_finfo_t *sock_info_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 
-	bpf_map_delete_elem(&files, &finfo_key);
-	bpf_map_delete_elem(&nex, &pid);
+	bpf_map_delete_elem(&maps_files, &finfo_key);
+	bpf_map_delete_elem(&maps_nex, &pid);
 	if (!sock_info_ptr || !next_state_ptr || ret < 0) return 0;
 
 	/* 将暂存的 fd 取出，然后将文件类型设置为 socket */
@@ -698,10 +712,10 @@ int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx)
 	finfo_key = ((__u64) pid << 32) | ret;
 	sock_info_ptr->op_cnt++;
 	/* 更新文件信息到正确的 fd */
-	long err = bpf_map_update_elem(&files, &finfo_key, sock_info_ptr, BPF_NOEXIST);
+	long err = bpf_map_update_elem(&maps_files, &finfo_key, sock_info_ptr, BPF_NOEXIST);
 	if (err < 0) return 0;
 
-	bpf_map_update_elem(&cur, &pid, next_state_ptr, BPF_EXIST);
+	bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_EXIST);
 
 	return 0;
 }
@@ -739,7 +753,7 @@ int BPF_KPROBE(vfs_open, const struct path *path, struct file *file) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	u64 key = (u64) pid << 32 | 0xffffffff;
-	struct p_finfo_t *file_info = bpf_map_lookup_elem(&files, &key);
+	struct p_finfo_t *file_info = bpf_map_lookup_elem(&maps_files, &key);
 
 	if (!file_info) return 0;
 
@@ -764,7 +778,7 @@ int BPF_KPROBE(vfs_unlink, struct mnt_idmap *idmap, struct inode *dir,
 #endif
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 	struct p_finfo_t finfo;
 
 	if (!next_state_ptr) return 0;
@@ -776,7 +790,7 @@ int BPF_KPROBE(vfs_unlink, struct mnt_idmap *idmap, struct inode *dir,
 	finfo.operation = OP_REMOVE;
 	finfo.type = get_file_type_by_dentry(dentry);
 
-	bpf_map_update_elem(&temp_file, &pid, &finfo, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_file, &pid, &finfo, BPF_NOEXIST);
 
 	return 0;
 }
@@ -784,10 +798,10 @@ SEC("kretprobe/vfs_unlink")
 int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
-	struct p_finfo_t *finfo_ptr = (struct p_finfo_t *) bpf_map_lookup_elem(&temp_file, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	struct p_finfo_t *finfo_ptr = (struct p_finfo_t *) bpf_map_lookup_elem(&maps_temp_file, &pid);
 
-	bpf_map_delete_elem(&temp_file, &pid);
+	bpf_map_delete_elem(&maps_temp_file, &pid);
 	if (!next_state_ptr || !finfo_ptr || ret < 0) return 0;
 
 	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
@@ -813,12 +827,12 @@ int BPF_KPROBE(vfs_rename, struct renamedata *rd) {
 #endif
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 
 	if (!next_state_ptr) return 0;
 #if __KERNEL_VERSION<512
-	bpf_map_update_elem(&temp_dentry, &pid, &old_dentry, BPF_NOEXIST);
-	bpf_map_update_elem(&temp_ddentry, &pid, &new_dentry, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_dentry, &pid, &old_dentry, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_ddentry, &pid, &new_dentry, BPF_NOEXIST);
 #else
 	bpf_map_update_elem(&temp_vars, &pid, &rd, BPF_NOEXIST);
 #endif
@@ -829,7 +843,7 @@ SEC("kretprobe/vfs_rename")
 int BPF_KRETPROBE(vfs_rename_exit, long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 /**
  * 为了方便支持不同版本的内核，统一使用 old_dentry,new_dentry
  * 来保存<源>和<目的>文件信息；
@@ -838,11 +852,11 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
  * 体内的内容相似，因此只更改入口和变量定义，以便代码复用
  */
 #if __KERNEL_VERSION<512
-	struct dentry **old = bpf_map_lookup_elem(&temp_dentry, &pid);
-	struct dentry **new = bpf_map_lookup_elem(&temp_ddentry, &pid);
+	struct dentry **old = bpf_map_lookup_elem(&maps_temp_dentry, &pid);
+	struct dentry **new = bpf_map_lookup_elem(&maps_temp_ddentry, &pid);
 
-	bpf_map_delete_elem(&temp_dentry, &pid);
-	bpf_map_delete_elem(&temp_ddentry, &pid);
+	bpf_map_delete_elem(&maps_temp_dentry, &pid);
+	bpf_map_delete_elem(&maps_temp_ddentry, &pid);
 	if (!next_state_ptr || !old || !new || ret < 0) return 0;
 
 	struct dentry *old_dentry = *old, *new_dentry = *new;
@@ -914,10 +928,10 @@ int BPF_KPROBE(vfs_mkdir, struct mnt_idmap *idmap,
 #endif
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 
 	if (!next_state_ptr) return 0;
-	bpf_map_update_elem(&temp_dentry, &pid, &dentry, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_dentry, &pid, &dentry, BPF_NOEXIST);
 
 	return 0;
 }
@@ -925,10 +939,10 @@ SEC("kretprobe/vfs_mkdir")
 int BPF_KRETPROBE(vfs_mkdir_exit, long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
-	struct dentry **dentry_ptr = bpf_map_lookup_elem(&temp_dentry, &pid), *dentry;
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	struct dentry **dentry_ptr = bpf_map_lookup_elem(&maps_temp_dentry, &pid), *dentry;
 
-	bpf_map_delete_elem(&temp_dentry, &pid);
+	bpf_map_delete_elem(&maps_temp_dentry, &pid);
 	if (!next_state_ptr || !dentry_ptr || ret < 0) return 0;
 
 	/* 输出创建目录信息 */
@@ -961,7 +975,7 @@ int BPF_KPROBE(vfs_rmdir, struct mnt_idmap *idmap,
 #endif
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 	struct p_finfo_t finfo;
 
 	if (!next_state_ptr) return 0;
@@ -973,7 +987,7 @@ int BPF_KPROBE(vfs_rmdir, struct mnt_idmap *idmap,
 	finfo.operation = OP_REMOVE;
 	finfo.type = get_file_type_by_dentry(dentry);
 
-	bpf_map_update_elem(&temp_file, &pid, &finfo, BPF_NOEXIST);
+	bpf_map_update_elem(&maps_temp_file, &pid, &finfo, BPF_NOEXIST);
 
 	return 0;
 }
@@ -981,10 +995,10 @@ SEC("kretprobe/vfs_rmdir")
 int BPF_KRETPROBE(vfs_rmdir_exit, long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
-	struct p_finfo_t *finfo_ptr = (struct p_finfo_t *) bpf_map_lookup_elem(&temp_file, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	struct p_finfo_t *finfo_ptr = (struct p_finfo_t *) bpf_map_lookup_elem(&maps_temp_file, &pid);
 
-	bpf_map_delete_elem(&temp_file, &pid);
+	bpf_map_delete_elem(&maps_temp_file, &pid);
 	if (!next_state_ptr || !finfo_ptr || ret < 0) return 0;
 
 	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
@@ -1003,11 +1017,11 @@ SEC("kprobe/tcp_v4_connect")
 int BPF_KPROBE(tcp_v4_connect, struct sock *sk) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&nex, &pid);
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 
 	if (next_state_ptr) {
 		/* 如果需要获取更多信息，则暂存 sock 指针 */
-		bpf_map_update_elem(&temp_sock, &pid, &sk, BPF_NOEXIST);
+		bpf_map_update_elem(&maps_temp_sock, &pid, &sk, BPF_NOEXIST);
 	}
 
 	return 0;
@@ -1018,10 +1032,10 @@ int BPF_KRETPROBE(tcp_v4_connect_exit, long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	__u64 finfo_key = ((__u64) pid << 32) | 0xffffffff;
-	struct sock **sk_ptr = bpf_map_lookup_elem(&temp_sock, &pid);
-	struct p_finfo_t *sock_info_ptr = bpf_map_lookup_elem(&files, &finfo_key);
+	struct sock **sk_ptr = bpf_map_lookup_elem(&maps_temp_sock, &pid);
+	struct p_finfo_t *sock_info_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	
-	bpf_map_delete_elem(&temp_sock, &pid);
+	bpf_map_delete_elem(&maps_temp_sock, &pid);
 	if (!sk_ptr || !sock_info_ptr) return 0;
 	struct sock *sk = *sk_ptr;
 

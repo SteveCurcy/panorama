@@ -1,11 +1,17 @@
-/* SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause) */
+/* 
+ * License-Identifier: BSD-3
+ * Copyright (c) 2023 Steve.Curcy
+ */
+#include <pwd.h>
 #include <time.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/time.h>
+#include <sys/types.h>
 #include <bpf/libbpf.h>
 #include <sys/resource.h>
+#include "config.h"
 #include "panorama.h"
 #include "panorama.skel.h"
 
@@ -24,9 +30,9 @@ struct __entry {
 	__u64 key;
 	__u32 val;
 } stt[] = {
-	{STT_KEY(0, SYSCALL_OPENAT, 0), 1},
-	{STT_KEY(1, SYSCALL_WRITE, 1), STATE_CAT},
-	{STT_KEY(STATE_CAT, SYSCALL_OPENAT, 0), 1},
+	{STT_KEY(0, SYSCALL_OPENAT, 0), STATE_CAT},
+	// {STT_KEY(1, SYSCALL_WRITE, 1), STATE_CAT},
+	{STT_KEY(STATE_CAT, SYSCALL_OPENAT, 0), STATE_CAT},
 	{STT_KEY(0, SYSCALL_UNLINKAT, 0), STATE_RM},
 	{STT_KEY(0, SYSCALL_RMDIR, 0), STATE_RMDIR},
 	{STT_KEY(0, SYSCALL_MKDIR, 0), STATE_MKDIR},
@@ -42,6 +48,7 @@ static int event_handler(void *ctx, void *data, size_t data_sz) {
 	const struct p_log_t *log = data;
 	struct tm *tm_t;
     struct timeval time;
+	struct passwd *user_info;
 
     gettimeofday(&time, NULL);
 	/* 将 tm 结构体转换为时间戳并计算得到文件打开的时间 */
@@ -71,8 +78,10 @@ static int event_handler(void *ctx, void *data, size_t data_sz) {
 		break;
 	}
 
-	printf("%s %6u %6u %32s(%s)\n  %44s %10s %8s %ld/%ld\n",
-			date_time, log->ppid, log->pid, log->comm, get_true_behave(log->state),
+	user_info = getpwuid(log->uid);
+
+	printf("%s %6u %6u %10s %32s(%s)\n  %44s %10s %8s %ld/%ld\n",
+			date_time, log->ppid, log->pid, user_info->pw_name, log->comm, get_true_behave(log->state),
 			file_info_str, get_filetype_str(log->info.type),
 			get_operation_str(log->info.operation), log->info.rx, log->info.tx);
 	
@@ -101,7 +110,7 @@ int main(int argc, char **argv) {
 	/* 将本程序的 pid 传入，防止监控自身行为 */
 	__u16 index = 0;
 	pid_t pid = getpid();
-	err = bpf_map__update_elem(skel->maps.self_pid, &index, sizeof(__u16), &pid,
+	err = bpf_map__update_elem(skel->maps.maps_self_pid, &index, sizeof(__u16), &pid,
 				   sizeof(pid_t), BPF_NOEXIST);
 	if (err < 0) {
 		fprintf(stderr, "Error updating map with pid: %s\n", strerror(err));
@@ -110,12 +119,19 @@ int main(int argc, char **argv) {
 	/* 将状态转移表更新到 bpf map 中 */
 	long stt_size = sizeof(stt) / sizeof(struct __entry);
 	for (int i = 0; i < stt_size; i++) {
-		err = bpf_map__update_elem(skel->maps.stt, &stt[i].key, sizeof(__u64), &stt[i].val,
+		err = bpf_map__update_elem(skel->maps.maps_stt, &stt[i].key, sizeof(__u64), &stt[i].val,
 					sizeof(__u32), BPF_NOEXIST);
 		if (err < 0) {
 			fprintf(stderr, "Error updating map, there may be duplicated stt items.\n");
 			goto cleanup;
 		}
+	}
+	/* 将需要过滤的进程哈希更新到 map 中 */
+	long filter_size = sizeof(filter_entrys) / sizeof(const char *);
+	__u8 dummy = 0;
+	for (int i = 0; i < filter_size; i++) {
+		__u64 hash_value = str_hash(filter_entrys[i]);
+		bpf_map__update_elem(skel->maps.maps_filter_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
 	}
 
 	/* Attach tracepoint handler */

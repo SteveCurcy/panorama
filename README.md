@@ -53,4 +53,4 @@ sudo ./panorama
 
 ## 使用许可
 
-[BSD-3](./LICENSE) :copyright: Xu.Cao (Steve Curcy)
+[BSD-3](./LICENSE) (c) Xu.Cao (Steve Curcy)
