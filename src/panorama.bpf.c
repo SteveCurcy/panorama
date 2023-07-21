@@ -1,6 +1,17 @@
 /* 
  * License-Identifier: BSD-3
  * Copyright (c) 2023 Steve.Curcy
+ * 
+ * 我们需要明确工作：
+ * 对于 openat 来说，它的调用顺序对于识别一个行为来说至关重要，
+ * 因此如果它不能引起状态转移，则应该不保存信息。
+ * 对于 write/close 来说，它可以影响状态，但是有时也可以出于
+ * 对状态机的缩减从而进行省略，因此只要对应的文件信息被记录过，
+ * 则应该先保证文件信息的更新，然后再判断是否能够进行状态转移。
+ * 对于 read 来说，它何时调用并不会影响一个行为，因此，它只
+ * 负责文件信息的更新，而不参与状态转移。
+ * 对于其他的系统调用，比如 unlink/rename 等都指示了一些程序
+ * 的行为，因此如果不符合状态机，则不保存文件信息。
  */
 #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
@@ -272,8 +283,9 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 	finfo_key = ((__u64) pid << 32) | ret;
 	err = bpf_map_update_elem(&maps_files, &finfo_key, new_finfo_ptr, BPF_ANY);
 	
-	/* 由于标准输出也会导致状态机的变化，因此在打开文件时，
+	/* deprecated 由于标准输出也会导致状态机的变化，因此在打开文件时，
 	 * 在初始状态下，自动将标准输出也添加到文件信息 map 中 */
+	/* 暂时不再记录标准输出的文件信息
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) {
 		struct p_finfo_t stdout;
@@ -285,7 +297,7 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 		stdout.type = S_IFCHR;
 		__u64 stdout_key = ((__u64) pid << 32) | 1;
 		err = bpf_map_update_elem(&maps_files, &stdout_key, &stdout, BPF_ANY);
-	}
+	} */
 
 	/* 更新状态信息 */
 	err = bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_ANY);
@@ -335,16 +347,17 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	int fd = BPF_CORE_READ(ctx, args[0]);
+	/* 确保保存了相关的文件信息才能进行状态机的匹配；
+	 * 如果没保存，说明在 openat 就没有匹配到 */
 	__u64 finfo_key = ((__u64) pid << 32) | fd;
 	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
-
 	if (!finfo_ptr) return 0;
 
-	/* 如果 fd 为 1 并且为字符型设备，说明是标准输出 */
-	__u32 ret = tracepoint__syscalls__sys_enter(SYSCALL_WRITE, (fd == 1 && finfo_ptr->type == S_IFCHR)?1:0);
-	if (!ret) return 0;
-
+	/* 不管是否会引起状态转移都保存，确保能更新文件信息 */
 	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_ANY);
+
+	/* deprecated 如果 fd 为 1 并且为字符型设备，说明是标准输出 */
+	tracepoint__syscalls__sys_enter(SYSCALL_WRITE, /* (fd == 1 && finfo_ptr->type == S_IFCHR)?1: */ 0);
 
 	return 0;
 }
@@ -375,11 +388,17 @@ SEC("tp/syscalls/sys_enter_close")
 int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter *ctx) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	tracepoint__syscalls__sys_enter(SYSCALL_CLOSE, 0);
-	// if (!pid) return 0;
+	int fd = BPF_CORE_READ(ctx, args[0]);
+	
+	/* 如果没保存该文件的信息则不进行状态机匹配 */
+	__u64 finfo_key = ((__u64) pid << 32) | fd;
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
+	if (!finfo_ptr) return 0;
 
 	int fd = BPF_CORE_READ(ctx, args[0]);
 	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_ANY);
+
+	tracepoint__syscalls__sys_enter(SYSCALL_CLOSE, 0);
 
 	return 0;
 }
@@ -400,14 +419,13 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 
 	/* 确定有对应文件再进行状态转移 */
 	tracepoint__syscalls__sys_exit(ret, SYSCALL_CLOSE);
-	// if (!pid) return 0;
 
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
 
 	bpf_map_delete_elem(&maps_files, &finfo_key);
 	if (!(finfo_ptr->op_cnt) && cur_state_ptr->state_code == STATE_CAT) {
-		/* 如果打开文件又关闭，但是没有操作过，并且状态码是 1，直接返回初始状态 */
+		/* 如果打开文件又关闭，但是没有操作过，并且状态码是 cat，直接返回初始状态 */
 		cur_state_ptr->state_code = 0;
 	}
 
