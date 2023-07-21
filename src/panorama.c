@@ -54,6 +54,13 @@ struct __entry {
 	{STT_KEY(4, SYSCALL_CLOSE, 0), 5},
 	{STT_KEY(5, SYSCALL_UNLINKAT, 0), STATE_GZIP},
 	{STT_KEY(STATE_GZIP, SYSCALL_OPENAT, FLAG_READ), 1},
+	/* zip */
+	{STT_KEY(STATE_TOUCH, SYSCALL_UNLINK, 0), 6},
+	{STT_KEY(6, SYSCALL_OPENAT, FLAG_CREATE), 7},
+	{STT_KEY(7, SYSCALL_OPENAT, FLAG_READ), 8},
+	{STT_KEY(8, SYSCALL_CLOSE, 0), 9},
+	{STT_KEY(9, SYSCALL_OPENAT, FLAG_READ), 8},
+	{STT_KEY(9, SYSCALL_RENAME, 0), STATE_ZIP},
 };
 
 static int event_handler(void *ctx, void *data, size_t data_sz) {
@@ -134,7 +141,7 @@ int main(int argc, char **argv) {
 		err = bpf_map__update_elem(skel->maps.maps_stt, &stt[i].key, sizeof(__u64), &stt[i].val,
 					sizeof(__u32), BPF_NOEXIST);
 		if (err < 0) {
-			fprintf(stderr, "Error updating map, there may be duplicated stt items.\n");
+			fprintf(stderr, "Error updating map, there may be duplicated stt items(%d).\n", i);
 			goto cleanup;
 		}
 	}

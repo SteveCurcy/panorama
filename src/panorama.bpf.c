@@ -362,11 +362,10 @@ int tracepoint__syscalls__sys_exit_write(struct trace_event_raw_sys_exit *ctx) {
 	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_ptr) return 0;
 
-	pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_WRITE);
-	if (!pid) return 0;
-
 	finfo_ptr->tx += ret;
 	finfo_ptr->op_cnt++;
+
+	pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_WRITE);
 	
 	return 0;
 }
