@@ -7,7 +7,16 @@ const char *filter_entrys[] = {
     "rpm",
     "dnf",
     "irqbalance",
-    "sssd_nss"  // RedHat 身分验证故障排除
+    "AliYunDunMonito",
+    "ps",
+    "git",
+    // "cat",
+    "sed",
+    "node",
+    "AliYunDun",
+    "AliSecGuard",
+    "sssd_nss",
+    "AliYunDunUpdate"
 };
 
 #endif
