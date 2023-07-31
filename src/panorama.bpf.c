@@ -19,6 +19,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "panorama.h"
+#include "config.h"
 
 /* 状态转移表，BPF_HASH;
  * state_transition_table 简写 stt,
@@ -101,13 +102,6 @@ struct {
 	__type(key, u64);
 	__type(value, struct p_finfo_t);
 } maps_files SEC(".maps");
-/* 用于过滤监控程序 panorama 本身的行为 */
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__uint(max_entries, 1);
-	__type(key, __u16);
-	__type(value, pid_t);
-} maps_self_pid SEC(".maps");
 /* 用于保存需要过滤的进程的哈希值 */
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
@@ -227,10 +221,6 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 
 	/* 如果一个文件的打开方式为 O_CLOEXEC 则大概率是一个库文件，将其过滤 */
 	if (flags == O_CLOEXEC) return 0;
-	/* 防止将监控程序本身输出 */
-	__u16 index = 0;
-	pid_t *_pid = bpf_map_lookup_elem(&maps_self_pid, &index);
-	if (!_pid || *_pid == pid) return 0;
 	if (if_filt()) return 0;
 
 	/* 根据打开方式获取状态转移标志字段 */
@@ -395,7 +385,6 @@ int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
 	if (!finfo_ptr) return 0;
 
-	int fd = BPF_CORE_READ(ctx, args[0]);
 	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_ANY);
 
 	tracepoint__syscalls__sys_enter(SYSCALL_CLOSE, 0);
@@ -424,10 +413,10 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 	if (!cur_state_ptr) return 0;
 
 	bpf_map_delete_elem(&maps_files, &finfo_key);
-	if (!(finfo_ptr->op_cnt) && cur_state_ptr->state_code == STATE_CAT) {
-		/* 如果打开文件又关闭，但是没有操作过，并且状态码是 cat，直接返回初始状态 */
-		cur_state_ptr->state_code = 0;
-	}
+	// if (!(finfo_ptr->op_cnt) && cur_state_ptr->state_code == STATE_CAT) {
+	// 	/* 如果打开文件又关闭，但是没有操作过，并且状态码是 cat，直接返回初始状态 */
+	// 	cur_state_ptr->state_code = 0;
+	// }
 
 	/* 如果文件没有被操作过，那么没有必要输出 */
 	if (finfo_ptr->op_cnt) {
@@ -846,18 +835,25 @@ int BPF_KPROBE(vfs_rename, struct inode *old_dir, struct dentry *old_dentry,
                   struct inode **delegated_inode, unsigned int flags) {
 #else
 int BPF_KPROBE(vfs_rename, struct renamedata *rd) {
+	struct dentry *old_dentry = BPF_CORE_READ(rd, old_dentry);
+	struct dentry *new_dentry = BPF_CORE_READ(rd, new_dentry);
 #endif
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
 
 	if (!next_state_ptr) return 0;
-#if __KERNEL_VERSION<512
-	bpf_map_update_elem(&maps_temp_dentry, &pid, &old_dentry, BPF_ANY);
-	bpf_map_update_elem(&maps_temp_ddentry, &pid, &new_dentry, BPF_ANY);
-#else
-	bpf_map_update_elem(&temp_vars, &pid, &rd, BPF_ANY);
-#endif
+
+	/* 获取源文件信息 */
+	struct p_finfo_t finfo;
+	__builtin_memset(&finfo, 0, sizeof(finfo));
+	finfo.fp.file.i_ino = BPF_CORE_READ(old_dentry, d_inode, i_ino);
+	BPF_CORE_READ_STR_INTO(&(finfo.fp.file.name), old_dentry, d_iname);
+	finfo.operation = OP_REMOVE;
+	finfo.type = get_file_type_by_dentry(old_dentry);
+
+	bpf_map_update_elem(&maps_temp_dentry, &pid, &new_dentry, BPF_ANY);
+	bpf_map_update_elem(&maps_temp_file, &pid, &finfo, BPF_ANY);
 
 	return 0;
 }
@@ -873,64 +869,47 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
  * 由于不同内核版本之间的区别只在于参数传递和变量定义，监控函数
  * 体内的内容相似，因此只更改入口和变量定义，以便代码复用
  */
-#if __KERNEL_VERSION<512
-	struct dentry **old = bpf_map_lookup_elem(&maps_temp_dentry, &pid);
-	struct dentry **new = bpf_map_lookup_elem(&maps_temp_ddentry, &pid);
+	struct p_finfo_t *finfo_ptr = bpf_map_lookup_elem(&maps_temp_file, &pid);
+	struct dentry **new = bpf_map_lookup_elem(&maps_temp_dentry, &pid);
 
+	bpf_map_delete_elem(&maps_temp_file, &pid);
 	bpf_map_delete_elem(&maps_temp_dentry, &pid);
-	bpf_map_delete_elem(&maps_temp_ddentry, &pid);
-	if (!next_state_ptr || !old || !new || ret < 0) return 0;
+	if (!next_state_ptr || !finfo_ptr || !new || ret < 0) return 0;
 
-	struct dentry *old_dentry = *old, *new_dentry = *new;
-#else
-	struct renamedata **rd_ptr = bpf_map_lookup_elem(&temp_vars, &pid), *rd;
+	struct dentry *new_dentry = *new;
 
-	bpf_map_delete_elem(&temp_vars, &pid);
-	if (!next_state_ptr || !rd_ptr || ret < 0) return 0;
-
-	rd = *rd_ptr;
-
-	struct dentry *old_dentry = BPF_CORE_READ(rd, old_dentry);
-	struct dentry *new_dentry = BPF_CORE_READ(rd, new_dentry);
-#endif
-
-	/* 输出旧路径 */
+	/* 输出源路径信息 */
 	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log) return 0;
+	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
+	bpf_ringbuf_submit(log, 0);
+
+	/* 输出被覆盖路径信息 */
+	log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
 	if (!log) return 0;
 
 	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	log->info.fp.file.i_ino = BPF_CORE_READ(old_dentry, d_inode, i_ino);
-	BPF_CORE_READ_STR_INTO(&(log->info.fp.file.name), old_dentry, d_iname);
-	log->info.operation = OP_REMOVE;
-	log->info.type = get_file_type_by_dentry(old_dentry);
+	log->info.fp.file.i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
 
-	bpf_ringbuf_submit(log, 0);
-
-	/* 如果新路径的 i_ino 为 0 说明不是覆盖，则再次输出旧路径即可；否则输出新路径 */
-	__u32 i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
-	if (i_ino) {
-		struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-		if (!log) return 0;
-
-		fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-		log->info.fp.file.i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
+	if (log->info.fp.file.i_ino) {
+		/* 说明是移动创建的形式 */
 		BPF_CORE_READ_STR_INTO(&(log->info.fp.file.name), new_dentry, d_iname);
 		log->info.operation = OP_COVER;
 		log->info.type = get_file_type_by_dentry(new_dentry);
-
 		bpf_ringbuf_submit(log, 0);
 	} else {
-		struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-		if (!log) return 0;
-
-		fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-		log->info.fp.file.i_ino = BPF_CORE_READ(old_dentry, d_inode, i_ino);
-		BPF_CORE_READ_STR_INTO(&(log->info.fp.file.name), old_dentry, d_iname);
-		log->info.operation = OP_CREATE;
-		log->info.type = get_file_type_by_dentry(old_dentry);
-
-		bpf_ringbuf_submit(log, 0);
+		bpf_ringbuf_discard(log, 0);
 	}
+
+	/* 输出目的路径信息 */
+	BPF_CORE_READ_STR_INTO(&(finfo_ptr->fp.file.name), new_dentry, d_iname);
+	finfo_ptr->operation = OP_CREATE;
+	log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log) return 0;
+	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
+	bpf_ringbuf_submit(log, 0);
 
 	return 0;
 }

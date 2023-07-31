@@ -37,9 +37,7 @@
 #define SYSCALL_RENAMEAT2 0x0d
 // #define SYSCALL_SOCKET 0x0e
 #define SYSCALL_CONNECT 0x0f
-/* 标识当前的内核版本号，必须指定，否则会报错；
- * xxxx 的形式指定，前两位为主版本号，后两位为此版本号 */
-#define __KERNEL_VERSION 418
+#define SYSCALL_EXIT_GROUP 0x10
 
 /* 补充 fcntl 中的标志位 */
 #ifndef O_RDONLY
@@ -185,6 +183,11 @@ static __u64 str_hash(const char *s) {
 #define STT_KEY(_oldcode, _sysid, _flags)\
     (((__u64) (_oldcode) << 32) |        \
     ((__u64) (_sysid) << 22) | (_flags) )
+
+#define DE_KEY(_key, _oldcode, _sysid, _flags)\
+    (_oldcode) = (_key) >> 32; \
+    (_sysid) = ((_key) >> 22) & 0x3ff; \
+    (_flags) = (_key) & 0x3fffff
 
 /* 文件类型，与 i_mode 中的文件类型表述相同 */
 #define S_IFMT     0170000   // bit mask for the file type bit field
