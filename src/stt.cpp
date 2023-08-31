@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <map>
 #include <unordered_map>
 using namespace std;
 
@@ -19,7 +20,7 @@ typedef pair<uint16_t, uint32_t> sys_flag_type;
 typedef pair<uint32_t, vector<sys_flag_type>> syslist_type;
 
 static unordered_map<uint64_t, uint32_t> stt_map;
-static unordered_map<pid_t, syslist_type> syscallLists;
+static map<pid_t, syslist_type> syscallLists;
 static vector<pair<uint64_t, uint32_t>> stt;
 
 uint16_t getProcCode(string procName) {
