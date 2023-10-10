@@ -16,7 +16,7 @@ typedef uint8_t __u8;
 
 /* 存储状态转移表
  * <oldcode><syscall_id><flags> => <newcode> */
-typedef pair<uint16_t, uint32_t> sys_flag_type;
+typedef uint32_t sys_flag_type;
 typedef pair<uint32_t, vector<sys_flag_type>> syslist_type;
 
 static unordered_map<uint64_t, uint32_t> stt_map;
@@ -55,23 +55,26 @@ const char *getStateStr(uint32_t procCode) {
     return NULL;
 }
 
-const char *getSyscallStr(uint16_t sysid) {
-    switch (sysid) {
-    case SYSCALL_OPENAT: return "SYSCALL_OPENAT";
-    case SYSCALL_DUP2: return "SYSCALL_DUP2";
-    case SYSCALL_DUP3: return "SYSCALL_DUP3";
-    case SYSCALL_WRITE: return "SYSCALL_WRITE";
-    case SYSCALL_CLOSE: return "SYSCALL_CLOSE";
-    case SYSCALL_UNLINK: return "SYSCALL_UNLINK";
-    case SYSCALL_UNLINKAT: return "SYSCALL_UNLINKAT";
-    case SYSCALL_MKDIR: return "SYSCALL_MKDIR";
-    case SYSCALL_MKDIRAT: return "SYSCALL_MKDIRAT";
-    case SYSCALL_RMDIR: return "SYSCALL_RMDIR";
-    case SYSCALL_RENAME: return "SYSCALL_RENAME";
-    case SYSCALL_RENAMEAT: return "SYSCALL_RENAMEAT";
-    case SYSCALL_RENAMEAT2: return "SYSCALL_RENAMEAT2";
-    }
-    return NULL;
+__always_inline static const char *getEventStr(__u32 sysid) {
+	switch (sysid) {
+	case PEVENT_OPEN_READ: return "PEVENT_OPEN_READ";
+	case PEVENT_OPEN_WRITE: return "PEVENT_OPEN_WRITE";
+	case PEVENT_OPEN_COVER: return "PEVENT_OPEN_COVER";
+	case PEVENT_OPEN_RDWR: return "PEVENT_OPEN_RDWR";
+	case PEVENT_OPEN_CREAT: return "PEVENT_OPEN_CREAT";
+	case PEVENT_OPEN_DIR: return "PEVENT_OPEN_DIR";
+	case PEVENT_READ: return "PEVENT_READ";
+	case PEVENT_WRITE: return "PEVENT_WRITE";
+	case PEVENT_CLOSE: return "PEVENT_CLOSE";
+	case PEVENT_UNLINK_FILE: return "PEVENT_UNLINK_FILE";
+	case PEVENT_UNLINK_DIR: return "PEVENT_UNLINK_DIR";
+	case PEVENT_MKDIR: return "PEVENT_MKDIR";
+	case PEVENT_RENAME: return "PEVENT_RENAME";
+	case PEVENT_DUP: return "PEVENT_DUP";
+	case SYSCALL_EXIT_GROUP: return "exit_group";
+	default:
+		return "nil";
+	}
 }
 
 int getSysLists(const string& filename) {
@@ -84,10 +87,9 @@ int getSysLists(const string& filename) {
     while (ifs >> pid) {
         string procName;
         string sysid;
-        string flags;
-        ifs >> procName >> sysid >> flags;
+        ifs >> procName >> sysid;
         syscallLists[pid].first = getProcCode(procName);
-        syscallLists[pid].second.emplace_back(atoi(sysid.c_str()), atoi(flags.c_str()));
+        syscallLists[pid].second.emplace_back(atoi(sysid.c_str()));
     }
 
     ifs.close();
@@ -101,9 +103,8 @@ void genStt() {
         curCode = 0;
         for (const auto& s: syscalls.second.second) {
             uint32_t nexCode = syscalls.second.first;
-            uint16_t sysid = s.first;
-            uint32_t flags = s.second;
-            uint64_t key = STT_KEY(curCode, sysid, flags);
+            uint16_t sysid = s;
+            uint64_t key = ((__u64)curCode << 32) | sysid;
             size_t cnt = stt_map.count(key);
             if (cnt) {
                 nexCode = stt_map[key];
@@ -124,15 +125,15 @@ void printStt() {
     //     return a.first < b.first;
     // });
     for (const auto& p: stt) {
-        __u32 oldCode, flags;
+        __u32 oldCode;
         __u16 sysid;
-        DE_KEY(p.first, oldCode, sysid, flags);
+        DE_KEY(p.first, oldCode, sysid);
         char oldCodeStr[32], newCodeStr[32];
         if (getStateStr(oldCode)) sprintf(oldCodeStr, "%s", getStateStr(oldCode));
         else sprintf(oldCodeStr, "%u", oldCode);
         if (getStateStr(p.second)) sprintf(newCodeStr, "%s", getStateStr(p.second));
         else sprintf(newCodeStr, "%u", p.second);
-        printf("{STT_KEY(%s, %s, %u), %s},\n", oldCodeStr, getSyscallStr(sysid), flags, newCodeStr);
+        printf("{STT_KEY(%s, %s), %s},\n", oldCodeStr, getEventStr(sysid), newCodeStr);
     }
 }
 

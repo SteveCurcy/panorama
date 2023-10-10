@@ -14,8 +14,7 @@ static volatile int new_state_code = 1;
 
 struct sf_t {
 	char comm[32];
-	__u16 sysid;
-	__u32 flags;
+	__u32 event;
 	pid_t pid;
 };
 
@@ -55,7 +54,7 @@ struct {
 /* 输出事件 */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
+	__uint(max_entries, 4096 * 64);
 } rb SEC(".maps");
 
 /* 判断当前进程是否是关心命令，是否需要加入状态机中 */
@@ -103,8 +102,7 @@ static pid_t tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
 	struct sf_t *sf_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct sf_t), 0);
 	if (!sf_ptr) return 0;
 	bpf_get_current_comm(&(sf_ptr->comm), 32);
-	sf_ptr->sysid = syscall_id;
-	sf_ptr->flags = *flags;
+	sf_ptr->event = *flags;
 	sf_ptr->pid = pid;
 
 	bpf_ringbuf_submit(sf_ptr, 0);
@@ -131,15 +129,16 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 	if (flags == O_CLOEXEC) return 0;
 
 	/* 根据打开方式获取状态转移标志字段 */
-	if (flags & O_DIRECTORY) return 0;	// 对于使用 openat 打开的目录不予处理
-	if (flags & O_CREAT) stt_flags = FLAG_CREATE;
-	else if (flags & O_WRONLY) {
-		if (flags & O_TRUNC) stt_flags = FLAG_COVER;
-		else stt_flags = FLAG_WRITE;
-	} else if (flags & O_RDWR) {
-		if (flags & O_TRUNC) stt_flags = FLAG_COVER;
-		else stt_flags = FLAG_RDWR;
-	} else stt_flags = FLAG_READ;
+	// if (flags & O_DIRECTORY) return 0;	// 对于使用 openat 打开的目录不予处理
+	// if (flags & O_CREAT) stt_flags = FLAG_CREATE;
+	// else if (flags & O_WRONLY) {
+	// 	if (flags & O_TRUNC) stt_flags = FLAG_COVER;
+	// 	else stt_flags = FLAG_WRITE;
+	// } else if (flags & O_RDWR) {
+	// 	if (flags & O_TRUNC) stt_flags = FLAG_COVER;
+	// 	else stt_flags = FLAG_RDWR;
+	// } else stt_flags = FLAG_READ;
+	stt_flags = get_open_evnt(flags);
 
 	tracepoint__syscalls__sys_enter(stt_flags);
 
@@ -182,7 +181,7 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	__u8 *dummy = bpf_map_lookup_elem(&maps_pid_fd, &dummy_key);
 	if (!dummy) return 0;
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_WRITE);
 
 	return 0;
 }
@@ -208,7 +207,7 @@ int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 	if (!dummy) return 0;
 
 	bpf_map_update_elem(&maps_tmp_fd, &pid, &fd, BPF_ANY);
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_CLOSE);
 
 	return 0;
 }
@@ -234,7 +233,7 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_unlink")
 int tracepoint__syscalls__sys_enter_unlink(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_UNLINK_FILE);
 
 	return 0;
 }
@@ -252,7 +251,7 @@ SEC("tp/syscalls/sys_enter_unlinkat")
 int tracepoint__syscalls__sys_enter_unlinkat(struct trace_event_raw_sys_enter *ctx) {
 
 	int flags = BPF_CORE_READ(ctx, args[2]);
-	tracepoint__syscalls__sys_enter(flags);
+	tracepoint__syscalls__sys_enter(flags == AT_REMOVEDIR ? PEVENT_UNLINK_DIR : PEVENT_UNLINK_FILE);
 
 	return 0;
 }
@@ -269,7 +268,7 @@ int tracepoint__syscalls__sys_exit_unlinkat(struct trace_event_raw_sys_exit *ctx
 SEC("tp/syscalls/sys_enter_mkdir")
 int tracepoint__syscalls__sys_enter_mkdir(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_MKDIR);
 
 	return 0;
 }
@@ -286,7 +285,7 @@ int tracepoint__syscalls__sys_exit_mkdir(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_mkdirat")
 int tracepoint__syscalls__sys_enter_mkdirat(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_MKDIR);
 
 	return 0;
 }
@@ -303,7 +302,7 @@ int tracepoint__syscalls__sys_exit_mkdirat(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_rmdir")
 int tracepoint__syscalls__sys_enter_rmdir(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_UNLINK_DIR);
 
 	return 0;
 }
@@ -320,7 +319,7 @@ int tracepoint__syscalls__sys_exit_rmdir(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_rename")
 int tracepoint__syscalls__sys_enter_rename(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }
@@ -337,7 +336,7 @@ int tracepoint__syscalls__sys_exit_rename(struct trace_event_raw_sys_exit *ctx) 
 SEC("tp/syscalls/sys_enter_renameat")
 int tracepoint__syscalls__sys_enter_renameat(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(0);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }
@@ -355,7 +354,7 @@ SEC("tp/syscalls/sys_enter_renameat2")
 int tracepoint__syscalls__sys_enter_renameat2(struct trace_event_raw_sys_enter *ctx) {
 
 	int flag = BPF_CORE_READ(ctx, args[4]);
-	tracepoint__syscalls__sys_enter(flag);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }

@@ -22,7 +22,7 @@ const char *filter_entrys[] = {
 
 /* 标识当前的内核版本号，必须指定，否则会报错；
  * xxxx 的形式指定，前两位为主版本号，后两位为此版本号 */
-#define __KERNEL_VERSION 418
+#define __KERNEL_VERSION 602
 #define __DEBUG_MOD 1
 
 #endif

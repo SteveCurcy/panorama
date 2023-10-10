@@ -91,6 +91,38 @@
 #ifndef O_CLOEXEC
 #define O_CLOEXEC	02000000	/* set close_on_exec */
 #endif
+#ifndef AT_REMOVEDIR
+#define AT_REMOVEDIR 0x200      /* unlinkat remove dir */
+#endif
+
+/* 状态转移触发事件，不再根据系统调用和参数的组合；
+ * 根据系统调用和参数计算事件类型，根据而类型转移，32bit */
+#define PEVENT_OPEN_READ    0x00000000  // 只读
+#define PEVENT_OPEN_WRITE   0x00000001  // 只写
+#define PEVENT_OPEN_COVER   0x00000002  // 覆盖
+#define PEVENT_OPEN_RDWR    0x00000003  // 既读又写
+#define PEVENT_OPEN_CREAT   0x00000004  // 创建
+#define PEVENT_OPEN_DIR     0x00000005  // 打开目录
+
+/* 根据打开方式获取上述事件类型 */
+static __u32 get_open_evnt(int flags) {
+    if (flags & O_DIRECTORY) return PEVENT_OPEN_DIR;
+    if (flags & O_CREAT) return PEVENT_OPEN_CREAT;
+    if (flags & O_TRUNC) return PEVENT_OPEN_COVER;
+    if (flags & O_WRONLY) return PEVENT_OPEN_WRITE;
+    if (flags & O_RDWR) return PEVENT_OPEN_RDWR;
+    return PEVENT_OPEN_READ;
+}
+
+#define PEVENT_READ         0x00000006
+#define PEVENT_WRITE        0x00000007
+#define PEVENT_CLOSE        0x00000008
+#define PEVENT_UNLINK_FILE  0x00000009  // 删除文件，unlink 或 unlinkat 0
+#define PEVENT_UNLINK_DIR   0x0000000a  // 删除目录，unlinkat 0x00 或 rmdir
+#define PEVENT_MKDIR        0x0000000b  // 创建目录
+#define PEVENT_RENAME       0x0000000c  // 重命名或移动
+#define PEVENT_DUP          0x0000000d  // 复制文件描述符 dup
+#define PEVENT_CONNECT      0x0000000e  // 连接建立
 
 /* 对文件的操作 */
 #define OP_READ     0
@@ -113,7 +145,7 @@
 #define FLAG_RDWR     4
 #define FLAG_DIR	  5
 
-/* 用于记录当前状态信息，使用位域来减少存储 */
+/* 用于记录当前状态信息 */
 struct p_state_t {
     __u32 state_code;   // 状态码，在状态机中的位置
     __u32 ppid;         // 父进程 pid，保存以节省再次获取的函数调用开销
@@ -180,14 +212,12 @@ static __u64 str_hash(const char *s) {
     (_s).ppid = (_ppid);                        \
     (_s).state_code = (_code)
 
-#define STT_KEY(_oldcode, _sysid, _flags)\
-    (((__u64) (_oldcode) << 32) |        \
-    ((__u64) (_sysid) << 22) | (_flags) )
+#define STT_KEY(_oldcode, _event)\
+    (((__u64) (_oldcode) << 32) | (_event))
 
-#define DE_KEY(_key, _oldcode, _sysid, _flags)\
+#define DE_KEY(_key, _oldcode, _event)\
     (_oldcode) = (_key) >> 32; \
-    (_sysid) = ((_key) >> 22) & 0x3ff; \
-    (_flags) = (_key) & 0x3fffff
+    (_event) = (_key) & 0xffffffff
 
 /* 文件类型，与 i_mode 中的文件类型表述相同 */
 #define S_IFMT     0170000   // bit mask for the file type bit field

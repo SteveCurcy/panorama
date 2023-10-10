@@ -41,22 +41,22 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 	return vfprintf(stderr, format, args);
 }
 
-__always_inline static const char *get_syscall_str(__u32 sysid) {
+__always_inline static const char *get_event_str(__u32 sysid) {
 	switch (sysid) {
-	case SYSCALL_OPENAT: return "openat";
-	case SYSCALL_DUP2: return "dup2";
-	case SYSCALL_DUP3: return "dup3";
-	case SYSCALL_READ: return "read";
-	case SYSCALL_WRITE: return "write";
-	case SYSCALL_CLOSE: return "close";
-	case SYSCALL_UNLINK: return "unlink";
-	case SYSCALL_UNLINKAT: return "unlinkat";
-	case SYSCALL_MKDIR: return "mkdir";
-	case SYSCALL_MKDIRAT: return "mkdirat";
-	case SYSCALL_RMDIR: return "rmdir";
-	case SYSCALL_RENAME: return "rename";
-	case SYSCALL_RENAMEAT: return "renameat";
-	case SYSCALL_RENAMEAT2: return "renameat2";
+	case PEVENT_OPEN_READ: return "PEVENT_OPEN_READ";
+	case PEVENT_OPEN_WRITE: return "PEVENT_OPEN_WRITE";
+	case PEVENT_OPEN_COVER: return "PEVENT_OPEN_COVER";
+	case PEVENT_OPEN_RDWR: return "PEVENT_OPEN_RDWR";
+	case PEVENT_OPEN_CREAT: return "PEVENT_OPEN_CREAT";
+	case PEVENT_OPEN_DIR: return "PEVENT_OPEN_DIR";
+	case PEVENT_READ: return "PEVENT_READ";
+	case PEVENT_WRITE: return "PEVENT_WRITE";
+	case PEVENT_CLOSE: return "PEVENT_CLOSE";
+	case PEVENT_UNLINK_FILE: return "PEVENT_UNLINK_FILE";
+	case PEVENT_UNLINK_DIR: return "PEVENT_UNLINK_DIR";
+	case PEVENT_MKDIR: return "PEVENT_MKDIR";
+	case PEVENT_RENAME: return "PEVENT_RENAME";
+	case PEVENT_DUP: return "PEVENT_DUP";
 	case SYSCALL_EXIT_GROUP: return "exit_group";
 	default:
 		return "nil";
@@ -65,8 +65,7 @@ __always_inline static const char *get_syscall_str(__u32 sysid) {
 
 struct sf_t {
 	char comm[32];
-	__u16 sysid;
-	__u32 flags;
+	__u32 event;
 	pid_t pid;
 };
 
@@ -74,7 +73,7 @@ static FILE *fp = NULL;
 
 static int event_handler(void *ctx, void *data, size_t data_sz) {
 	struct sf_t *sf_ptr = (struct sf_t *)data;
-	fprintf(fp, "%u %s %u %u\n", sf_ptr->pid, sf_ptr->comm, sf_ptr->sysid, sf_ptr->flags);
+	fprintf(fp, "%u %s %u\n", sf_ptr->pid, sf_ptr->comm, sf_ptr->event);
 	
 	return 0;
 }

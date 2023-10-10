@@ -23,10 +23,9 @@
 
 /* 状态转移表，BPF_HASH;
  * state_transition_table 简写 stt,
- * <old_code><syscall_id><flags>, <new_code>
+ * <old_code><event>, <new_code>
  * - old_code 为旧状态码 -- 32bit；
- * - syscall_id 为系统调用序列编号 -- 10bit；
- * - flags 为标志位，如系统调用的标志等 -- 22bit；
+ * - event 为触发状态转移的事件 -- 32bit；
  * - new_code 为新的状态码，即状态转移之后的状态码 */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -112,7 +111,7 @@ struct {
 /* 事件类型，将日志信息传输到用户空间 */
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 256 * 1024);
+	__uint(max_entries, 256 * 4096);
 } rb SEC(".maps");
 
 /* 填充一个 log 类型，然后发送到用户空间 */
@@ -159,11 +158,10 @@ __always_inline static bool if_filt() {
  * 关于相关函数的细节处理放在对应的系统调用监控程序中，
  * 避免当前函数调用过于冗长，并且可能判断本不属于该调用的事件，造成性能损失
  * 
- * @param syscall_id 系统调用编号
- * @param flags 系统调用的标志
+ * @param event 触发状态转移的事件
  * @return 返回 pid，如果执行出错则返回 0
  */
-static int tracepoint__syscalls__sys_enter(__u16 syscall_id, __u32 flags) {
+static int tracepoint__syscalls__sys_enter(__u32 event) {
 	
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid), s;
@@ -176,7 +174,7 @@ static int tracepoint__syscalls__sys_enter(__u16 syscall_id, __u32 flags) {
 	if (if_filt()) return 0;
 
 	/* 查看是否会引起状态转移，如果不能则直接返回 */
-	__u64 trigger_key = STT_KEY(cur_state_ptr->state_code, syscall_id, flags);
+	__u64 trigger_key = STT_KEY(cur_state_ptr->state_code, event);
 	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &trigger_key);
 	if (!next_state_code) return 0;
 
@@ -186,7 +184,7 @@ static int tracepoint__syscalls__sys_enter(__u16 syscall_id, __u32 flags) {
 	
 	return pid;
 }
-static int tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
+static int tracepoint__syscalls__sys_exit(long ret) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
@@ -225,22 +223,25 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 
 	/* 根据打开方式获取状态转移标志字段 */
 	__builtin_memset(&new_file_info, 0, sizeof(new_file_info));
-	if (flags & O_DIRECTORY) return 0;	// 对于使用 openat 打开的目录不予处理
-	if (flags & O_CREAT) stt_flags = FLAG_CREATE, new_file_info.operation = OP_CREATE, new_file_info.op_cnt = 1;
-	else if (flags & O_WRONLY) {
-		if (flags & O_TRUNC) stt_flags = FLAG_COVER, new_file_info.operation = OP_COVER, new_file_info.op_cnt = 1;
-		else stt_flags = FLAG_WRITE, new_file_info.operation = OP_WRITE;
-	} else if (flags & O_RDWR) {
-		if (flags & O_TRUNC) stt_flags = FLAG_COVER, new_file_info.operation = OP_COVER, new_file_info.op_cnt = 1;
-		else stt_flags = FLAG_RDWR, new_file_info.operation = OP_RDWR;
-	} else stt_flags = FLAG_READ, new_file_info.operation = OP_READ;
+	stt_flags = get_open_evnt(flags);
+	switch (stt_flags)
+	{
+	case PEVENT_OPEN_READ: new_file_info.operation = OP_READ; break;
+	case PEVENT_OPEN_WRITE: new_file_info.operation = OP_WRITE; break;
+	case PEVENT_OPEN_COVER: new_file_info.operation = OP_COVER; new_file_info.op_cnt = 1; break;
+	case PEVENT_OPEN_RDWR: new_file_info.operation = OP_RDWR; break;
+	case PEVENT_OPEN_CREAT: new_file_info.operation = OP_CREATE, new_file_info.op_cnt = 1; break;
+	case PEVENT_OPEN_DIR: new_file_info.operation = OP_OPEN; break;
+	default:
+		break;
+	}
 	new_file_info.open_time = bpf_ktime_get_boot_ns();
 
 	if (!cur_state_ptr) cur_state_ptr = &s;
 	if (!cur_state_ptr) return 0;
 
 	/* 获取下一个状态的状态码，无法获取说明不能进行状态转移，直接返回 */
-	__u64 trigger_key = (__u64) cur_state_ptr->state_code << 32 | (__u64) SYSCALL_OPENAT << 22 | stt_flags;
+	__u64 trigger_key = STT_KEY(cur_state_ptr->state_code, stt_flags);
 	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &trigger_key);
 	if (!next_state_code) return 0;
 
@@ -346,8 +347,7 @@ int tracepoint__syscalls__sys_enter_write(struct trace_event_raw_sys_enter *ctx)
 	/* 不管是否会引起状态转移都保存，确保能更新文件信息 */
 	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_ANY);
 
-	/* deprecated 如果 fd 为 1 并且为字符型设备，说明是标准输出 */
-	tracepoint__syscalls__sys_enter(SYSCALL_WRITE, /* (fd == 1 && finfo_ptr->type == S_IFCHR)?1: */ 0);
+	tracepoint__syscalls__sys_enter(PEVENT_WRITE);
 
 	return 0;
 }
@@ -368,7 +368,7 @@ int tracepoint__syscalls__sys_exit_write(struct trace_event_raw_sys_exit *ctx) {
 	finfo_ptr->tx += ret;
 	finfo_ptr->op_cnt++;
 
-	pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_WRITE);
+	pid = tracepoint__syscalls__sys_exit(ret);
 	
 	return 0;
 }
@@ -387,7 +387,7 @@ int tracepoint__syscalls__sys_enter_close(struct trace_event_raw_sys_enter *ctx)
 
 	bpf_map_update_elem(&maps_temp_fd, &pid, &fd, BPF_ANY);
 
-	tracepoint__syscalls__sys_enter(SYSCALL_CLOSE, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_CLOSE);
 
 	return 0;
 }
@@ -407,7 +407,7 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 	if (!finfo_ptr) return 0;
 
 	/* 确定有对应文件再进行状态转移 */
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_CLOSE);
+	tracepoint__syscalls__sys_exit(ret);
 
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	if (!cur_state_ptr) return 0;
@@ -438,7 +438,7 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_unlink")
 int tracepoint__syscalls__sys_enter_unlink(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_UNLINK, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_UNLINK_FILE);
 
 	return 0;
 }
@@ -446,7 +446,7 @@ SEC("tp/syscalls/sys_exit_unlink")
 int tracepoint__syscalls__sys_exit_unlink(struct trace_event_raw_sys_exit *ctx) {
 
 	long ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_UNLINK);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -456,7 +456,7 @@ SEC("tp/syscalls/sys_enter_unlinkat")
 int tracepoint__syscalls__sys_enter_unlinkat(struct trace_event_raw_sys_enter *ctx) {
 
 	int flags = BPF_CORE_READ(ctx, args[2]);
-	tracepoint__syscalls__sys_enter(SYSCALL_UNLINKAT, flags);
+	tracepoint__syscalls__sys_enter(flags == AT_REMOVEDIR ? PEVENT_UNLINK_DIR : PEVENT_UNLINK_FILE);
 
 	return 0;
 }
@@ -464,7 +464,7 @@ SEC("tp/syscalls/sys_exit_unlinkat")
 int tracepoint__syscalls__sys_exit_unlinkat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_UNLINKAT);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -473,7 +473,7 @@ int tracepoint__syscalls__sys_exit_unlinkat(struct trace_event_raw_sys_exit *ctx
 SEC("tp/syscalls/sys_enter_mkdir")
 int tracepoint__syscalls__sys_enter_mkdir(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_MKDIR, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_MKDIR);
 
 	return 0;
 }
@@ -481,7 +481,7 @@ SEC("tp/syscalls/sys_exit_mkdir")
 int tracepoint__syscalls__sys_exit_mkdir(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_MKDIR);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -490,7 +490,7 @@ int tracepoint__syscalls__sys_exit_mkdir(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_mkdirat")
 int tracepoint__syscalls__sys_enter_mkdirat(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_MKDIRAT, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_MKDIR);
 
 	return 0;
 }
@@ -498,7 +498,7 @@ SEC("tp/syscalls/sys_exit_mkdirat")
 int tracepoint__syscalls__sys_exit_mkdirat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_MKDIRAT);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -507,7 +507,7 @@ int tracepoint__syscalls__sys_exit_mkdirat(struct trace_event_raw_sys_exit *ctx)
 SEC("tp/syscalls/sys_enter_rmdir")
 int tracepoint__syscalls__sys_enter_rmdir(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_RMDIR, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_UNLINK_DIR);
 
 	return 0;
 }
@@ -515,7 +515,7 @@ SEC("tp/syscalls/sys_exit_rmdir")
 int tracepoint__syscalls__sys_exit_rmdir(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RMDIR);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -524,7 +524,7 @@ int tracepoint__syscalls__sys_exit_rmdir(struct trace_event_raw_sys_exit *ctx) {
 SEC("tp/syscalls/sys_enter_rename")
 int tracepoint__syscalls__sys_enter_rename(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_RENAME, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }
@@ -532,7 +532,7 @@ SEC("tp/syscalls/sys_exit_rename")
 int tracepoint__syscalls__sys_exit_rename(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAME);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -541,7 +541,7 @@ int tracepoint__syscalls__sys_exit_rename(struct trace_event_raw_sys_exit *ctx) 
 SEC("tp/syscalls/sys_enter_renameat")
 int tracepoint__syscalls__sys_enter_renameat(struct trace_event_raw_sys_enter *ctx) {
 
-	tracepoint__syscalls__sys_enter(SYSCALL_RENAMEAT, 0);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }
@@ -549,7 +549,7 @@ SEC("tp/syscalls/sys_exit_renameat")
 int tracepoint__syscalls__sys_exit_renameat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAMEAT);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
@@ -558,8 +558,8 @@ int tracepoint__syscalls__sys_exit_renameat(struct trace_event_raw_sys_exit *ctx
 SEC("tp/syscalls/sys_enter_renameat2")
 int tracepoint__syscalls__sys_enter_renameat2(struct trace_event_raw_sys_enter *ctx) {
 
-	int flag = BPF_CORE_READ(ctx, args[4]);
-	tracepoint__syscalls__sys_enter(SYSCALL_RENAMEAT2, flag);
+	// int flag = BPF_CORE_READ(ctx, args[4]);
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
 
 	return 0;
 }
@@ -567,15 +567,13 @@ SEC("tp/syscalls/sys_exit_renameat2")
 int tracepoint__syscalls__sys_exit_renameat2(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAMEAT2);
+	tracepoint__syscalls__sys_exit(ret);
 
 	return 0;
 }
 
-/* int dup2(int oldfd, int newfd) */
-SEC("tp/syscalls/sys_enter_dup2")
-int tracepoint__syscalls__sys_enter_dup2(struct trace_event_raw_sys_enter *ctx) {
-
+/* dup2/3 入口处理函数 */
+static int enter_dup(struct trace_event_raw_sys_enter *ctx) {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
@@ -588,9 +586,9 @@ int tracepoint__syscalls__sys_enter_dup2(struct trace_event_raw_sys_enter *ctx) 
 
 	return 0;
 }
-SEC("tp/syscalls/sys_exit_dup2")
-int tracepoint__syscalls__sys_exit_dup2(struct trace_event_raw_sys_exit *ctx) {
 
+/* dup2/3 出口处理函数 */
+static int exit_dup(struct trace_event_raw_sys_exit *ctx) {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
 	__u64 *tmpfds = bpf_map_lookup_elem(&maps_temp_fd, &pid);
@@ -613,45 +611,24 @@ int tracepoint__syscalls__sys_exit_dup2(struct trace_event_raw_sys_exit *ctx) {
 	return 0;
 }
 
+/* int dup2(int oldfd, int newfd) */
+SEC("tp/syscalls/sys_enter_dup2")
+int tracepoint__syscalls__sys_enter_dup2(struct trace_event_raw_sys_enter *ctx) {
+	return enter_dup(ctx);
+}
+SEC("tp/syscalls/sys_exit_dup2")
+int tracepoint__syscalls__sys_exit_dup2(struct trace_event_raw_sys_exit *ctx) {
+	return exit_dup(ctx);
+}
+
 /* int dup3(int oldfd, int newfd, int flags) */
 SEC("tp/syscalls/sys_enter_dup3")
 int tracepoint__syscalls__sys_enter_dup3(struct trace_event_raw_sys_enter *ctx) {
-
-	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
-	if (!cur_state_ptr) return 0;
-
-	int oldfd = BPF_CORE_READ(ctx, args[0]);
-	int newfd = BPF_CORE_READ(ctx, args[1]);
-	__u64 tmpfds = (__u64) oldfd << 32 | newfd;
-	bpf_map_update_elem(&maps_temp_fd, &pid, &tmpfds, BPF_ANY);
-
-	return 0;
+	return enter_dup(ctx);
 }
 SEC("tp/syscalls/sys_exit_dup3")
 int tracepoint__syscalls__sys_exit_dup3(struct trace_event_raw_sys_exit *ctx) {
-
-	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
-	__u64 *tmpfds = bpf_map_lookup_elem(&maps_temp_fd, &pid);
-	long ret = BPF_CORE_READ(ctx, ret);
-
-	bpf_map_delete_elem(&maps_temp_fd, &pid);
-	if (!tmpfds || !cur_state_ptr || ret < 0) return 0;
-
-	// 取出原 fd 对应的文件信息
-	__u64 finfo_key = ((__u64) pid << 32) | (*tmpfds >> 32);
-	struct p_finfo_t *finfo_value = bpf_map_lookup_elem(&maps_files, &finfo_key);
-	if (!finfo_value) return 0;
-
-	// 将文件信息更新到新 fd 上
-	bpf_map_delete_elem(&maps_files, &finfo_key);
-	finfo_key = ((__u64) pid << 32) | (*tmpfds & 0xffffffff);
-	finfo_value->op_cnt++;
-	bpf_map_update_elem(&maps_files, &finfo_key, finfo_value, BPF_ANY);
-
-	return 0;
+	return exit_dup(ctx);
 }
 
 /**
@@ -679,7 +656,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	if (!cur_state_ptr) return 0;
 
 	/* 首先查看能否引起状态转移 */
-	__u64 cur_state = STT_KEY(cur_state_ptr->state_code, SYSCALL_CONNECT, 0);
+	__u64 cur_state = STT_KEY(cur_state_ptr->state_code, PEVENT_CONNECT);
 	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &cur_state);
 	if (!next_state_code) return 0;
 
