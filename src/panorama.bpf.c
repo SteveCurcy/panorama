@@ -109,10 +109,20 @@ struct {
 	__type(value, __u8);
 } maps_filter_hash SEC(".maps");
 /* 事件类型，将日志信息传输到用户空间 */
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+struct {
+	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+	__uint(key_size, sizeof(__u32));
+	__uint(value_size, sizeof(__u32));
+} rb SEC(".maps");
+#else
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 256 * 4096);
 } rb SEC(".maps");
+#endif
+#endif
 
 /* 填充一个 log 类型，然后发送到用户空间 */
 #ifndef fill_log
@@ -235,7 +245,7 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 	default:
 		break;
 	}
-	new_file_info.open_time = bpf_ktime_get_boot_ns();
+	new_file_info.open_time = bpf_ktime_get_ns();	// bpf_ktime_get_boot_ns 不可用，改用 bpf_ktime_get_ns
 
 	if (!cur_state_ptr) cur_state_ptr = &s;
 	if (!cur_state_ptr) return 0;
@@ -420,15 +430,25 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 
 	/* 如果文件没有被操作过，那么没有必要输出 */
 	if (finfo_ptr->op_cnt) {
-		struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+		struct p_log_t log, *log_ptr = &log;
+		__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+		struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
 		if (!log) return 0;
+#endif
 
-		fill_log(*log, cur_state_ptr->ppid,
+		fill_log(*log_ptr, cur_state_ptr->ppid,
 				pid, cur_state_ptr->state_code,
-				bpf_ktime_get_boot_ns() - finfo_ptr->open_time);
-		bpf_core_read(&(log->info), sizeof(*finfo_ptr), finfo_ptr);
-		
-		bpf_ringbuf_submit(log, 0);
+				bpf_ktime_get_ns() - finfo_ptr->open_time);
+		bpf_core_read(&(log_ptr->info), sizeof(*finfo_ptr), finfo_ptr);
+#if __KERNEL_VERSION<508
+		bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+		bpf_ringbuf_submit(log_ptr, 0);
+#endif
+#endif
 	}
 
 	return 0;
@@ -673,7 +693,7 @@ int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ct
 	__builtin_memset(&new_sock_info, 0, sizeof(new_sock_info));
 	new_sock_info.type = fd;	// 使用 type 字段暂存 fd
 	new_sock_info.operation = OP_TRANSMIT;
-	new_sock_info.open_time = bpf_ktime_get_boot_ns();
+	new_sock_info.open_time = bpf_ktime_get_ns();
 
 	__u64 finfo_key = (__u64) pid << 32 | 0xffffffff;
 	bpf_map_update_elem(&maps_files, &finfo_key, &new_sock_info, BPF_ANY);
@@ -792,13 +812,24 @@ int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
 	bpf_map_delete_elem(&maps_temp_file, &pid);
 	if (!next_state_ptr || !finfo_ptr || ret < 0) return 0;
 
-	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+	struct p_log_t log, *log_ptr = &log;
+	__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
 
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log_ptr->info), sizeof(log_ptr->info), finfo_ptr);
 
-	bpf_ringbuf_submit(log, 0);
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
+#endif
 
 	return 0;
 }
@@ -856,37 +887,67 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
 	struct dentry *new_dentry = *new;
 
 	/* 输出源路径信息 */
-	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
-	bpf_ringbuf_submit(log, 0);
+#if __KERNEL_VERSION<508
+	struct p_log_t log, *log_ptr = &log;
+	__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
+
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log_ptr->info), sizeof(log_ptr->info), finfo_ptr);
+
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
 
 	/* 输出被覆盖路径信息 */
-	log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
+#if __KERNEL_VERSION<508
+	// __builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
 
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	log->info.fp.file.i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	log_ptr->info.fp.file.i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
 
-	if (log->info.fp.file.i_ino) {
+	if (log_ptr->info.fp.file.i_ino) {
 		/* 说明是移动创建的形式 */
-		BPF_CORE_READ_STR_INTO(&(log->info.fp.file.name), new_dentry, d_iname);
-		log->info.operation = OP_COVER;
-		log->info.type = get_file_type_by_dentry(new_dentry);
-		bpf_ringbuf_submit(log, 0);
+		BPF_CORE_READ_STR_INTO(&(log_ptr->info.fp.file.name), new_dentry, d_iname);
+		log_ptr->info.operation = OP_COVER;
+		log_ptr->info.type = get_file_type_by_dentry(new_dentry);
+#if __KERNEL_VERSION<508
+		bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+		bpf_ringbuf_submit(log_ptr, 0);
+#endif
 	} else {
-		bpf_ringbuf_discard(log, 0);
+#if __KERNEL_VERSION>=508
+		bpf_ringbuf_discard(log_ptr, 0);
+#endif
 	}
+
 
 	/* 输出目的路径信息 */
 	BPF_CORE_READ_STR_INTO(&(finfo_ptr->fp.file.name), new_dentry, d_iname);
 	finfo_ptr->operation = OP_CREATE;
+#if __KERNEL_VERSION<508
+	// __builtin_memset(log_ptr, 0, sizeof(log));
+#else
 	log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
 	if (!log) return 0;
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
-	bpf_ringbuf_submit(log, 0);
+#endif
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log_ptr->info), sizeof(log_ptr->info), finfo_ptr);
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
 
 	return 0;
 }
@@ -925,16 +986,25 @@ int BPF_KRETPROBE(vfs_mkdir_exit, long ret) {
 
 	/* 输出创建目录信息 */
 	dentry = *dentry_ptr;
-	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
+#if __KERNEL_VERSION<508
+	struct p_log_t log, *log_ptr = &log;
+	__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
 
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	log->info.fp.file.i_ino = BPF_CORE_READ(dentry, d_inode, i_ino);
-	BPF_CORE_READ_STR_INTO(&(log->info.fp.file.name), dentry, d_iname);
-	log->info.operation = OP_CREATE;
-	log->info.type = get_file_type_by_dentry(dentry);
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	log_ptr->info.fp.file.i_ino = BPF_CORE_READ(dentry, d_inode, i_ino);
+	BPF_CORE_READ_STR_INTO(&(log_ptr->info.fp.file.name), dentry, d_iname);
+	log_ptr->info.operation = OP_CREATE;
+	log_ptr->info.type = get_file_type_by_dentry(dentry);
 
-	bpf_ringbuf_submit(log, 0);
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
 
 	return 0;
 }
@@ -979,13 +1049,22 @@ int BPF_KRETPROBE(vfs_rmdir_exit, long ret) {
 	bpf_map_delete_elem(&maps_temp_file, &pid);
 	if (!next_state_ptr || !finfo_ptr || ret < 0) return 0;
 
-	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
+#if __KERNEL_VERSION<508
+	struct p_log_t log, *log_ptr = &log;
+	__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
 
-	fill_log(*log, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
-	bpf_core_read(&(log->info), sizeof(log->info), finfo_ptr);
+	fill_log(*log_ptr, next_state_ptr->ppid, pid, next_state_ptr->state_code, 0);
+	bpf_core_read(&(log_ptr->info), sizeof(log_ptr->info), finfo_ptr);
 
-	bpf_ringbuf_submit(log, 0);
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
 
 	return 0;
 }
@@ -1047,9 +1126,14 @@ int BPF_KRETPROBE(inet_csk_accept_exit, struct sock *newsk) {
     dport = BPF_CORE_READ(newsk, __sk_common.skc_dport);
     dport = bpf_ntohs(dport);
 
-	struct p_log_t *log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
-	if (!log) return 0;
-	fill_log(*log, 1, pid, 0, 1000000);
+#if __KERNEL_VERSION<508
+	struct p_log_t log, *log_ptr = &log;
+	__builtin_memset(log_ptr, 0, sizeof(log));
+#else
+	struct p_log_t *log_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
+	if (!log_ptr) return 0;
+#endif
+	fill_log(*log_ptr, 1, pid, 0, 1000000);
 
 	__builtin_memset(&new_sock, 0, sizeof(new_sock));
     new_sock.fp.socket.to_ip = bpf_ntohl(BPF_CORE_READ(newsk, __sk_common.skc_rcv_saddr));
@@ -1058,9 +1142,13 @@ int BPF_KRETPROBE(inet_csk_accept_exit, struct sock *newsk) {
     new_sock.fp.socket.from_port = dport;
 	new_sock.operation = OP_RECEIVE;
 	new_sock.type = S_IFSOCK;
-	log->info = new_sock;
+	log_ptr->info = new_sock;
 
-	bpf_ringbuf_submit(log, 0);
+#if __KERNEL_VERSION<508
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, log_ptr, sizeof(*log_ptr));
+#else
+	bpf_ringbuf_submit(log_ptr, 0);
+#endif
 
 	return 0;
 }

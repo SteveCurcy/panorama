@@ -8,6 +8,7 @@
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
 #include "panorama.h"
+#include "config.h"
 
 /* 默认情况下，0 是起始状态，改变量保存下一个可以使用的最新状态码 */
 static volatile int new_state_code = 1;
@@ -52,10 +53,23 @@ struct {
 	__type(value, __u16);
 } maps_sysid SEC(".maps");
 /* 输出事件 */
+/* 输出事件如果使用 perf_event 一定要指定 key_size, value_size；
+ * 如果使用 ring_buffer 则最好指明 max_entries，并且要大于 4096B */
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+struct {
+	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+	__uint(key_size, sizeof(__u32));
+	__uint(value_size, sizeof(__u32));
+	// __uint(max_entries, 4096 * 64);
+} rb SEC(".maps");
+#else	// linux v5.8 开始支持 ring buffer
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 4096 * 64);
 } rb SEC(".maps");
+#endif
+#endif	// end of __KERNEL_VERSION
 
 /* 判断当前进程是否是关心命令，是否需要加入状态机中 */
 __always_inline static bool if_capture() {
@@ -81,7 +95,7 @@ static pid_t tracepoint__syscalls__sys_enter(__u32 flags) {
 	
 	return pid;
 }
-static pid_t tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
+static pid_t tracepoint__syscalls__sys_exit(struct trace_event_raw_sys_exit *ctx, long ret, __u16 syscall_id) {
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	__u32 *flags = bpf_map_lookup_elem(&maps_flags, &pid);
@@ -99,14 +113,26 @@ static pid_t tracepoint__syscalls__sys_exit(long ret, __u16 syscall_id) {
 	*sysid_ptr = syscall_id;
 	bpf_map_update_elem(&maps_sysid, &pid, sysid_ptr, BPF_ANY);
 
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+	struct sf_t sf_ptr;
+	__builtin_memset(&sf_ptr, 0, sizeof(sf_ptr));
+	bpf_get_current_comm(&(sf_ptr.comm), 32);
+	sf_ptr.event = *flags;
+	sf_ptr.pid = pid;
+
+	bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, &sf_ptr, sizeof(sf_ptr));
+#else	// 内核 5.8 开始支持
 	struct sf_t *sf_ptr = bpf_ringbuf_reserve(&rb, sizeof(struct sf_t), 0);
-	if (!sf_ptr) return 0;
+	if (!sf_ptr) return 0;	// 申请内存空间失败
+
 	bpf_get_current_comm(&(sf_ptr->comm), 32);
 	sf_ptr->event = *flags;
 	sf_ptr->pid = pid;
 
-	bpf_ringbuf_submit(sf_ptr, 0);
-
+	bpf_ringbuf_output(sf_ptr, 0);
+#endif
+#endif // __KERNEL_VERSION
 	return pid;
 }
 
@@ -128,16 +154,6 @@ int tracepoint__syscalls__sys_enter_openat(struct trace_event_raw_sys_enter *ctx
 	/* 如果一个文件的打开方式为 O_CLOEXEC 则大概率是一个库文件，将其过滤 */
 	if (flags == O_CLOEXEC) return 0;
 
-	/* 根据打开方式获取状态转移标志字段 */
-	// if (flags & O_DIRECTORY) return 0;	// 对于使用 openat 打开的目录不予处理
-	// if (flags & O_CREAT) stt_flags = FLAG_CREATE;
-	// else if (flags & O_WRONLY) {
-	// 	if (flags & O_TRUNC) stt_flags = FLAG_COVER;
-	// 	else stt_flags = FLAG_WRITE;
-	// } else if (flags & O_RDWR) {
-	// 	if (flags & O_TRUNC) stt_flags = FLAG_COVER;
-	// 	else stt_flags = FLAG_RDWR;
-	// } else stt_flags = FLAG_READ;
 	stt_flags = get_open_evnt(flags);
 
 	tracepoint__syscalls__sys_enter(stt_flags);
@@ -149,7 +165,7 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 
 	long ret = BPF_CORE_READ(ctx, ret), err = 0;
 
-	pid_t pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_OPENAT);
+	pid_t pid = tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_OPENAT);
 	if (!pid) return 0;
 
 	__u8 zero = 0;
@@ -190,7 +206,7 @@ int tracepoint__syscalls__sys_exit_write(struct trace_event_raw_sys_exit *ctx) {
 
 	long ret = BPF_CORE_READ(ctx, ret), err = 0;
 
-	pid_t pid = tracepoint__syscalls__sys_exit(ret, SYSCALL_WRITE);
+	pid_t pid = tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_WRITE);
 	
 	return 0;
 }
@@ -224,7 +240,7 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
 	}
 
 	bpf_map_delete_elem(&maps_tmp_fd, &pid);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_CLOSE);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_CLOSE);
 
 	return 0;
 }
@@ -241,7 +257,7 @@ SEC("tp/syscalls/sys_exit_unlink")
 int tracepoint__syscalls__sys_exit_unlink(struct trace_event_raw_sys_exit *ctx) {
 
 	long ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_UNLINK);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_UNLINK);
 
 	return 0;
 }
@@ -259,7 +275,7 @@ SEC("tp/syscalls/sys_exit_unlinkat")
 int tracepoint__syscalls__sys_exit_unlinkat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_UNLINKAT);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_UNLINKAT);
 
 	return 0;
 }
@@ -276,7 +292,7 @@ SEC("tp/syscalls/sys_exit_mkdir")
 int tracepoint__syscalls__sys_exit_mkdir(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_MKDIR);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_MKDIR);
 
 	return 0;
 }
@@ -293,7 +309,7 @@ SEC("tp/syscalls/sys_exit_mkdirat")
 int tracepoint__syscalls__sys_exit_mkdirat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_MKDIRAT);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_MKDIRAT);
 
 	return 0;
 }
@@ -310,7 +326,7 @@ SEC("tp/syscalls/sys_exit_rmdir")
 int tracepoint__syscalls__sys_exit_rmdir(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RMDIR);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_RMDIR);
 
 	return 0;
 }
@@ -327,7 +343,7 @@ SEC("tp/syscalls/sys_exit_rename")
 int tracepoint__syscalls__sys_exit_rename(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAME);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_RENAME);
 
 	return 0;
 }
@@ -344,7 +360,7 @@ SEC("tp/syscalls/sys_exit_renameat")
 int tracepoint__syscalls__sys_exit_renameat(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAMEAT);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_RENAMEAT);
 
 	return 0;
 }
@@ -362,7 +378,7 @@ SEC("tp/syscalls/sys_exit_renameat2")
 int tracepoint__syscalls__sys_exit_renameat2(struct trace_event_raw_sys_exit *ctx) {
 
 	int ret = BPF_CORE_READ(ctx, ret);
-	tracepoint__syscalls__sys_exit(ret, SYSCALL_RENAMEAT2);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_RENAMEAT2);
 
 	return 0;
 }

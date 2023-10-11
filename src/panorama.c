@@ -33,26 +33,26 @@ struct __entry {
 	__u32 val;
 } stt[] = {
 	{STT_KEY(0, PEVENT_OPEN_READ), 1},
-	{STT_KEY(1, PEVENT_CLOSE), STATE_CAT},
-	{STT_KEY(0, PEVENT_OPEN_CREAT), 2},
-	{STT_KEY(2, PEVENT_CLOSE), STATE_TOUCH},
-	{STT_KEY(0, PEVENT_UNLINK_FILE), STATE_RM},
-	{STT_KEY(0, PEVENT_MKDIR), STATE_MKDIR},
-	{STT_KEY(0, PEVENT_UNLINK_DIR), STATE_RMDIR},
-	{STT_KEY(0, PEVENT_OPEN_DIR), 3},
-	{STT_KEY(3, PEVENT_OPEN_READ), 4},
-	{STT_KEY(4, PEVENT_OPEN_CREAT), 5},
-	{STT_KEY(5, PEVENT_WRITE), 6},
-	{STT_KEY(6, PEVENT_CLOSE), 7},
-	{STT_KEY(7, PEVENT_CLOSE), 8},
-	{STT_KEY(8, PEVENT_UNLINK_FILE), STATE_GZIP},
-	{STT_KEY(1, PEVENT_OPEN_CREAT), 9},
-	{STT_KEY(9, PEVENT_WRITE), 10},
-	{STT_KEY(10, PEVENT_CLOSE), 11},
-	{STT_KEY(11, PEVENT_CLOSE), STATE_SPLIT},
-	{STT_KEY(STATE_CAT, PEVENT_OPEN_CREAT), 12},
+	{STT_KEY(1, PEVENT_CLOSE), 2},
+	{STT_KEY(2, PEVENT_OPEN_READ), 3},
+	{STT_KEY(3, PEVENT_CLOSE), STATE_CAT},
+	{STT_KEY(2, PEVENT_OPEN_CREAT), 4},
+	{STT_KEY(4, PEVENT_CLOSE), STATE_TOUCH},
+	{STT_KEY(2, PEVENT_UNLINK_FILE), STATE_RM},
+	{STT_KEY(2, PEVENT_MKDIR), STATE_MKDIR},
+	{STT_KEY(2, PEVENT_UNLINK_DIR), STATE_RMDIR},
+	{STT_KEY(0, PEVENT_OPEN_DIR), 5},
+	{STT_KEY(5, PEVENT_OPEN_READ), 6},
+	{STT_KEY(6, PEVENT_OPEN_CREAT), 7},
+	{STT_KEY(7, PEVENT_WRITE), 8},
+	{STT_KEY(8, PEVENT_CLOSE), 9},
+	{STT_KEY(9, PEVENT_CLOSE), 10},
+	{STT_KEY(10, PEVENT_UNLINK_FILE), STATE_GZIP},
+	{STT_KEY(3, PEVENT_OPEN_CREAT), 11},
+	{STT_KEY(11, PEVENT_WRITE), 12},
 	{STT_KEY(12, PEVENT_CLOSE), 13},
-	{STT_KEY(13, PEVENT_UNLINK_FILE), 14},
+	{STT_KEY(13, PEVENT_CLOSE), STATE_SPLIT},
+	{STT_KEY(STATE_TOUCH, PEVENT_UNLINK_FILE), 14},
 	{STT_KEY(14, PEVENT_OPEN_CREAT), 15},
 	{STT_KEY(15, PEVENT_OPEN_READ), 16},
 	{STT_KEY(16, PEVENT_WRITE), 17},
@@ -60,15 +60,20 @@ struct __entry {
 	{STT_KEY(18, PEVENT_WRITE), 19},
 	{STT_KEY(19, PEVENT_CLOSE), 20},
 	{STT_KEY(20, PEVENT_RENAME), STATE_ZIP},
-	{STT_KEY(1, PEVENT_UNLINK_FILE), 21},
+	{STT_KEY(3, PEVENT_UNLINK_FILE), 21},
 	{STT_KEY(21, PEVENT_OPEN_CREAT), 22},
 	{STT_KEY(22, PEVENT_WRITE), 23},
 	{STT_KEY(23, PEVENT_CLOSE), 24},
 	{STT_KEY(24, PEVENT_CLOSE), STATE_UNZIP},
-	{STT_KEY(0, PEVENT_RENAME), STATE_MV}
+	{STT_KEY(2, PEVENT_RENAME), STATE_MV}
 };
 
+#ifdef __KERNEL_VERSION
+#if __KERNEL_VERSION<508
+static void event_handler(void *ctx, int cpu, void *data, unsigned int data_sz) {
+#else
 static int event_handler(void *ctx, void *data, size_t data_sz) {
+#endif
 	const struct p_log_t *log = data;
 	struct tm *tm_t;
     struct timeval time;
@@ -108,13 +113,21 @@ static int event_handler(void *ctx, void *data, size_t data_sz) {
 			date_time, log->ppid, log->pid, user_info->pw_name, log->comm, get_true_behave(log->state),
 			file_info_str, get_filetype_str(log->info.type),
 			get_operation_str(log->info.operation), log->info.rx, log->info.tx);
-	
-	return 0;
-}
 
+#if __KERNEL_VERSION>=508
+	return 0;
+#endif
+}
+#endif	// __KERNEL_VERSION
+
+#ifdef __KERNEL_VERSION
 int main(int argc, char **argv) {
 	struct panorama_bpf *skel;
+#if __KERNEL_VERSION<508
+	struct perf_buffer *rb = NULL;
+#else
 	struct ring_buffer *rb = NULL;
+#endif
 	long err = 0;
 
 	/* 设置 libbpf 打印错误和调试信息的回调函数 */
@@ -168,7 +181,11 @@ int main(int argc, char **argv) {
 
 	printf("Bpf programs have been attached successfully!\n");
 
+#if __KERNEL_VERSION<508
+	rb = perf_buffer__new(bpf_map__fd(skel->maps.rb), 4, event_handler, NULL, NULL, NULL);
+#else
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), event_handler, NULL, NULL);
+#endif
 	if (!rb) {
 		err = -1;
 		fprintf(stderr, "Failed to create ring buffer\n");
@@ -182,7 +199,11 @@ int main(int argc, char **argv) {
 		 * - ring_buffer__consume 通过轮询的方式来获取事件，实时性更高但是性能损耗也更高；
 		 * 为了平衡性能和实时性，采用 ring_buffer__poll 方式将更好。 
 		 */
-		err = ring_buffer__poll(rb, 100 /* 超时时间，100 ms */);
+#if __KERNEL_VERSION<508
+		err = perf_buffer__poll(rb, 100 /* 超时时间，100 ms */);
+#else
+		err = ring_buffer__poll(rb, 100);
+#endif
 		/* Ctrl-C 会导致 -EINTR */
 		if (err == -EINTR) {
 			err = 0;
@@ -202,3 +223,4 @@ cleanup:
 	#endif
 	return -err;
 }
+#endif
