@@ -29,7 +29,10 @@ struct __entry {
 	{"unzip", 1},
 	{"split", 1},
 	{"cp", 2},
-	{"mv", 2}
+	{"mv", 2},
+	{"scp", 2},
+	{"ssh", 2},
+	{"sshd", 4}
 };
 
 /* 保存当前程序是否正运行 */
@@ -58,7 +61,8 @@ __always_inline static const char *get_event_str(__u32 sysid) {
 	case PEVENT_MKDIR: return "PEVENT_MKDIR";
 	case PEVENT_RENAME: return "PEVENT_RENAME";
 	case PEVENT_DUP: return "PEVENT_DUP";
-	case SYSCALL_EXIT_GROUP: return "exit_group";
+	case PEVENT_CONNECT: return "PEVENT_CONNECT";
+	case PEVENT_ACCEPT: return "PEVENT_ACCEPT";
 	default:
 		return "nil";
 	}
@@ -104,11 +108,15 @@ int main(int argc, char **argv) {
 	signal(SIGINT, sig_handler);
 	signal(SIGTERM, sig_handler);
 
+#ifdef __DEBUG_MOD
+	fp = stdout;
+#else
 	fp = fopen("/var/log/genor.log", "w");
 	if (fp == NULL) {
 		fprintf(stderr, "Log file open failed!\n");
 		return 2;
 	}
+#endif
 
 	/* Load and verify BPF application */
 	skel = genor_bpf__open_and_load();

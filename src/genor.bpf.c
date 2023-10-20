@@ -472,75 +472,38 @@ int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit *ctx) 
 */
 
 /* int connect(int fd, struct sockaddr *uservaddr, int addrlen) */
-// SEC("tp/syscalls/sys_enter_connect")
-// int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
+SEC("tp/syscalls/sys_enter_connect")
+int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
 
-// 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-// 	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
-// 	if (!cur_state_ptr) return 0;
+	tracepoint__syscalls__sys_enter(PEVENT_CONNECT);
 
-// 	/* 首先查看能否引起状态转移 */
-// 	__u64 cur_state = STT_KEY(cur_state_ptr->state_code, SYSCALL_CONNECT, 0);
-// 	__u32 *next_state_code = bpf_map_lookup_elem(&maps_stt, &cur_state);
-// 	if (!next_state_code) return 0;
+	return 0;
+}
+SEC("tp/syscalls/sys_exit_connect")
+int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
 
-// 	/* 创建一个临时的套接字文件信息，通过内核函数获取具体详细信息；
-// 	 * 获取系统调用参数 fd 并临时保存 */
-// 	int fd = BPF_CORE_READ(ctx, args[0]);
-// 	struct p_finfo_t new_sock_info;
+	int ret = BPF_CORE_READ(ctx, ret);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_CONNECT);
 
-// 	struct p_state_t s;
-// 	NEW_STATE(s, cur_state_ptr->ppid, *next_state_code);
-// 	long err = bpf_map_update_elem(&maps_nex, &pid, &s, BPF_ANY);
-// 	if (err < 0) return 0;
-
-// 	__builtin_memset(&new_sock_info, 0, sizeof(new_sock_info));
-// 	new_sock_info.type = fd;	// 使用 type 字段暂存 fd
-// 	new_sock_info.operation = OP_TRANSMIT;
-// 	new_sock_info.open_time = bpf_ktime_get_boot_ns();
-
-// 	__u64 finfo_key = (__u64) pid << 32 | 0xffffffff;
-// 	bpf_map_update_elem(&maps_files, &finfo_key, &new_sock_info, BPF_ANY);
-
-// 	return 0;
-// }
-// SEC("tp/syscalls/sys_exit_connect")
-// int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx) {
-
-// 	/* 查看返回值是否为负值（调用失败）；
-// 	 * 如果失败，则将对应的文件信息删除；否则更新状态信息 */
-// 	long ret = BPF_CORE_READ(ctx, ret);
-// 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-// 	__u64 finfo_key = ((__u64) pid << 32) | 0xffffffff;
-// 	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
-// 	struct p_finfo_t *sock_info_ptr = bpf_map_lookup_elem(&maps_files, &finfo_key);
-
-// 	bpf_map_delete_elem(&maps_files, &finfo_key);
-// 	bpf_map_delete_elem(&maps_nex, &pid);
-// 	if (!sock_info_ptr || !next_state_ptr || ret < 0) return 0;
-
-// 	/* 将暂存的 fd 取出，然后将文件类型设置为 socket */
-// 	int fd = sock_info_ptr->type;
-// 	finfo_key = ((__u64) pid << 32) | ret;
-// 	sock_info_ptr->op_cnt++;
-// 	/* 更新文件信息到正确的 fd */
-// 	long err = bpf_map_update_elem(&maps_files, &finfo_key, sock_info_ptr, BPF_ANY);
-// 	if (err < 0) return 0;
-
-// 	bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_ANY);
-
-// 	return 0;
-// }
+	return 0;
+}
 
 /* long accept(int fd, struct sockaddr *upeer_sockaddr, int upeer_addrlen) */
-// SEC("tp/syscalls/sys_enter_accept")
-// int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter *ctx) {
-// 	return 0;
-// }
-// SEC("tp/syscalls/sys_exit_accept")
-// int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit *ctx) {
-// 	return 0;
-// }
+SEC("tp/syscalls/sys_enter_accept")
+int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter *ctx) {
+
+	tracepoint__syscalls__sys_enter(PEVENT_ACCEPT);
+
+	return 0;
+}
+SEC("tp/syscalls/sys_exit_accept")
+int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit *ctx) {
+
+	int ret = BPF_CORE_READ(ctx, ret);
+	tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_ACCEPT);
+
+	return 0;
+}
 
 /* long exit_group(int error_code) */
 SEC("tp/syscalls/sys_enter_exit_group")

@@ -20,6 +20,7 @@
 #define STATE_VI 0x800b
 #define STATE_SSH 0x800c
 #define STATE_SCP 0x800d
+#define STATE_SSHD 0x800e
 
 #define SYSCALL_OPENAT 0x00
 #define SYSCALL_DUP2 0x01
@@ -35,7 +36,7 @@
 #define SYSCALL_RENAME 0x0b
 #define SYSCALL_RENAMEAT 0x0c
 #define SYSCALL_RENAMEAT2 0x0d
-// #define SYSCALL_SOCKET 0x0e
+#define SYSCALL_ACCEPT 0x0e
 #define SYSCALL_CONNECT 0x0f
 #define SYSCALL_EXIT_GROUP 0x10
 
@@ -123,6 +124,7 @@ static __u32 get_open_evnt(int flags) {
 #define PEVENT_RENAME       0x0000000c  // 重命名或移动
 #define PEVENT_DUP          0x0000000d  // 复制文件描述符 dup
 #define PEVENT_CONNECT      0x0000000e  // 连接建立
+#define PEVENT_ACCEPT       0x0000000f  // 接受连接
 
 /* 对文件的操作 */
 #define OP_READ     0
@@ -284,6 +286,7 @@ __always_inline static const char *get_true_behave(__u32 state_code) {
 	case STATE_VI: return "vi/vim";
 	case STATE_SSH: return "ssh";
 	case STATE_SCP: return "scp";
+    case STATE_SSHD: return "sshd";
 	default:
 		break;
 	}

@@ -717,7 +717,8 @@ int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx)
 
 	/* 将暂存的 fd 取出，然后将文件类型设置为 socket */
 	int fd = sock_info_ptr->type;
-	finfo_key = ((__u64) pid << 32) | ret;
+	finfo_key = ((__u64) pid << 32) | fd;
+	sock_info_ptr->type = S_IFSOCK;
 	sock_info_ptr->op_cnt++;
 	/* 更新文件信息到正确的 fd */
 	long err = bpf_map_update_elem(&maps_files, &finfo_key, sock_info_ptr, BPF_ANY);
@@ -1101,7 +1102,7 @@ int BPF_KRETPROBE(tcp_v4_connect_exit, long ret) {
     sock_info_ptr->fp.socket.to_port = bpf_ntohs(BPF_CORE_READ(sk, __sk_common.skc_dport));
 	sock_info_ptr->fp.socket.from_ip = bpf_ntohl(BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr));
 	sock_info_ptr->fp.socket.to_ip = bpf_ntohl(BPF_CORE_READ(sk, __sk_common.skc_daddr));
-	sock_info_ptr->type = S_IFSOCK;
+	// sock_info_ptr->type = S_IFSOCK;
 
 	return 0;
 }

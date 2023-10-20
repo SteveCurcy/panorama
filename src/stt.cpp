@@ -35,6 +35,9 @@ uint16_t getProcCode(string procName) {
     if (procName == "zip") return STATE_ZIP;
     if (procName == "unzip") return STATE_UNZIP;
     if (procName == "split") return STATE_SPLIT;
+    if (procName == "scp" || procName == "sshpass") return STATE_SCP;
+    if (procName == "ssh") return STATE_SSH;
+    if (procName == "sshd") return STATE_SSHD;
     return 0xffff;
 }
 
@@ -51,6 +54,9 @@ const char *getStateStr(uint32_t procCode) {
     case STATE_ZIP: return "STATE_ZIP";
     case STATE_UNZIP: return "STATE_UNZIP";
     case STATE_SPLIT: return "STATE_SPLIT";
+    case STATE_SCP: return "STATE_SCP";
+    case STATE_SSH: return "STATE_SSH";
+    case STATE_SSHD: return "STATE_SSHD";
     }
     return NULL;
 }
@@ -71,7 +77,8 @@ __always_inline static const char *getEventStr(__u32 sysid) {
 	case PEVENT_MKDIR: return "PEVENT_MKDIR";
 	case PEVENT_RENAME: return "PEVENT_RENAME";
 	case PEVENT_DUP: return "PEVENT_DUP";
-	case SYSCALL_EXIT_GROUP: return "exit_group";
+	case PEVENT_CONNECT: return "PEVENT_CONNECT";
+	case PEVENT_ACCEPT: return "PEVENT_ACCEPT";
 	default:
 		return "nil";
 	}
