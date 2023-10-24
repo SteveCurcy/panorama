@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.2.1-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.4.1-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -40,7 +40,7 @@ git submodule update --init --recursive # 初始化依赖库
 mkdir build && cd build
 cmake ../src
 make
-clang++ -O3 ../src/stt.cpp -o stt
+clang++ -O3 ../src/sttGenor.cpp -o sttGenor
 ```
 
 ## 示例

@@ -97,7 +97,7 @@
 #endif
 
 /* 状态转移触发事件，不再根据系统调用和参数的组合；
- * 根据系统调用和参数计算事件类型，根据而类型转移，32bit */
+ * 根据系统调用和参数计算事件类型，根据类型转移，32bit */
 #define PEVENT_OPEN_READ    0x00000000  // 只读
 #define PEVENT_OPEN_WRITE   0x00000001  // 只写
 #define PEVENT_OPEN_COVER   0x00000002  // 覆盖
@@ -137,6 +137,8 @@ static __u32 get_open_evnt(int flags) {
 #define OP_RECEIVE  7
 #define OP_RXTX     8
 #define OP_OPEN     9   // 用于目录打开
+#define OP_RENAMED  10  // 用于被重命名
+#define OP_RENAMETO 11  // 用于重命名目标
 
 /* 状态转移表中的 flags 字段取值 */
 /* openat 系统调用部分标志 */
@@ -248,6 +250,8 @@ __always_inline static const char *get_operation_str(__u32 _operation_id) {
 	case OP_RECEIVE: return "receive";
 	case OP_RXTX: return "rx&tx";
 	case OP_OPEN: return "open";
+    case OP_RENAMED: return "renamed";
+    case OP_RENAMETO: return "rename-to";
 	default:
 		break;
 	}

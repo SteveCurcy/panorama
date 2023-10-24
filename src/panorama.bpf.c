@@ -858,7 +858,7 @@ int BPF_KPROBE(vfs_rename, struct renamedata *rd) {
 	__builtin_memset(&finfo, 0, sizeof(finfo));
 	finfo.fp.file.i_ino = BPF_CORE_READ(old_dentry, d_inode, i_ino);
 	BPF_CORE_READ_STR_INTO(&(finfo.fp.file.name), old_dentry, d_iname);
-	finfo.operation = OP_REMOVE;
+	finfo.operation = OP_RENAMED;
 	finfo.type = get_file_type_by_dentry(old_dentry);
 
 	bpf_map_update_elem(&maps_temp_dentry, &pid, &new_dentry, BPF_ANY);
@@ -917,7 +917,7 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
 	log_ptr->info.fp.file.i_ino = BPF_CORE_READ(new_dentry, d_inode, i_ino);
 
 	if (log_ptr->info.fp.file.i_ino) {
-		/* 说明是移动创建的形式 */
+		/* 说明是移动创建的形式，输出被覆盖的文件信息 */
 		BPF_CORE_READ_STR_INTO(&(log_ptr->info.fp.file.name), new_dentry, d_iname);
 		log_ptr->info.operation = OP_COVER;
 		log_ptr->info.type = get_file_type_by_dentry(new_dentry);
@@ -935,7 +935,7 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
 
 	/* 输出目的路径信息 */
 	BPF_CORE_READ_STR_INTO(&(finfo_ptr->fp.file.name), new_dentry, d_iname);
-	finfo_ptr->operation = OP_CREATE;
+	finfo_ptr->operation = OP_RENAMETO;
 #if __KERNEL_VERSION<508
 	// __builtin_memset(log_ptr, 0, sizeof(log));
 #else
