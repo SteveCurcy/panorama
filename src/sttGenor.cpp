@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <utility>
+#include <map>
 #include <unordered_map>
 #include <algorithm>
 
@@ -118,10 +119,10 @@ int initPeventList(const string& filename) {
     // }
     /* 为了保证简单任务的事件序列不会被复杂任务的覆盖，
      * 将简单任务的排序到前面（这里认为简单任务的序列长度更短） */
-    sort(peventLists.begin(), peventLists.end(), [](const auto& a, const auto& b) -> bool {
-        return a.second.size() <= b.second.size();
-        // return priority[a.first] <= priority[b.first];
-    });
+    // sort(peventLists.begin(), peventLists.end(), [](const auto& a, const auto& b) -> bool {
+    //     return a.second.size() <= b.second.size();
+    //     // return priority[a.first] <= priority[b.first];
+    // });
 
     ifs.close();
     return 0;
@@ -158,12 +159,21 @@ void genStateTransitionTable() {
                 stt.emplace_back(key, nextCode);
                 curCode = nextCode;
             } else {
-                /* 因为要构造环，首先保存当前状态，最后一次事件将回到当前状态 */
-                /* 先处理前处理 unit - 1 个 */
+                /* 这个时候需要注意，当前事件会不会是进程的最后 */
+                bool delay = false;
+                if (i + span == len) {
+                    if (likely(unit > 1 || i + span < len)) nextCode = newCode++;
+                    else nextCode = finalCode;
+                    sttMap[key] = nextCode;
+                    stt.emplace_back(key, nextCode);
+                    curCode = nextCode;
+                    delay = true;
+                }
+                /* 开始构造环，则先处理前 unit - 1 个事件，最后一个事件回到旧状态 */
                 auto oldState = curCode;
-                for (int j = 0; j < unit - 1; j++) {
+                for (int j = (delay? 1: 0); j < (delay? unit: unit - 1); j++) {
                     /* 只有当前位置到了重复单元的最后部分，并且总重复长度后序列结束，才说明当前到达了序列的末端 */
-                    if (likely(j != unit - 2 || i + span < len)) nextCode = newCode++;
+                    if (likely(j != unit - 1 || i + span < len)) nextCode = newCode++;
                     else nextCode = finalCode;
                     key = ((__u64)curCode << 32) | pevents[i + j];
                     sttMap[key] = nextCode;
@@ -171,11 +181,14 @@ void genStateTransitionTable() {
                     stt.emplace_back(key, nextCode);
                 }
                 /* 然后，最后一个事件回到原来的状态 */
-                pevent = pevents[i + unit - 1];
+                pevent = pevents[i + (delay ? unit: unit - 1)];
                 key = ((__u64)curCode << 32) | pevent;
-                sttMap[key] = oldState;
+                /* 这里需要注意，自旋的部分可能出现重复的状态转移 */
+                if (!sttMap.count(key)) {
+                    sttMap[key] = oldState;
+                    stt.emplace_back(key, oldState);
+                }
                 curCode = oldState;
-                stt.emplace_back(key, oldState);
                 /* 由于后面 span 长度的都是重复，直接跳转到最后即可 */
                 i += span - 1;
             }

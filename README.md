@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.4.1-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.4.2-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -10,6 +10,7 @@ Panorama 是一个用于产生高级行为日志的日志采集系统。它将�
 
 - [使用说明](#使用说明)
 - [示例](#示例)
+- [现有问题](#现有问题)
 - [使用许可](#使用许可)
 
 ## 使用说明
@@ -68,9 +69,13 @@ cat /var/log/panorama.log
 
 ## 说明
 
-本项目主要分为了 genor 和 panorama 两个部分。其中 genor 是用来生成指定命令的行为模式，然后通过 stt 根据行为模式生成状态机；panorama 则根据状态机识别进程行为并输出日志。
+本项目主要分为了 genor 和 panorama 两个部分。其中 genor 是用来生成指定命令的行为模式，然后通过 sttGenor 根据行为模式生成状态机；panorama 则根据状态机识别进程行为并输出日志。
 
-首先调用 genor 将行为模式存储在 /var/log/genor.log 文件中，stt 将读取该文件并输出生成的状态机。在单进程命令操作单个文件的条件下，生成的状态机可以直接复制粘贴到 panorama.c 文件中使用；如果单进程命令想识别操作多个文件的命令，则需要进行人工矫正。
+首先调用 genor 将行为模式存储在 /var/log/genor.log 文件中，sttGenor 将读取该文件并输出生成的状态机。
+
+## 现有问题
+
+目前使用的内核为 v5.4 版本，不支持 ringbuf，只能使用 perf event。但是 perf event 会存在性能低、事件乱序等问题，这导致由 genor 生成的行为模式也会受影响，从而不能符合原有行为的特征或出现误判。
 
 ## 使用许可
 

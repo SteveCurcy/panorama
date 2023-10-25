@@ -29,7 +29,7 @@ struct __entry {
 	{"unzip", 1},
 	{"split", 1},
 	{"cp", 2},
-	{"mv", 2},
+	{"mv", 4},
 	{"scp", 2},
 	{"ssh", 2},
 	{"sshd", 4}
