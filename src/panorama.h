@@ -47,7 +47,7 @@
 #ifndef O_WRONLY
 #define O_WRONLY	00000001
 #endif
-#ifndef ORDWR
+#ifndef O_RDWR
 #define O_RDWR		00000002
 #endif
 #ifndef O_CREAT
@@ -224,14 +224,30 @@ static __u64 str_hash(const char *s) {
     (_event) = (_key) & 0xffffffff
 
 /* 文件类型，与 i_mode 中的文件类型表述相同 */
+#ifndef S_IFMT
 #define S_IFMT     0170000   // bit mask for the file type bit field
+#endif
+#ifndef S_IFSOCK
 #define S_IFSOCK   0140000   // socket
+#endif
+#ifndef S_IFLNK
 #define S_IFLNK    0120000   // symbolic link
+#endif
+#ifndef S_IFREG
 #define S_IFREG    0100000   // regular file
+#endif
+#ifndef S_IFBLK
 #define S_IFBLK    0060000   // block device
+#endif
+#ifndef S_IFDIR
 #define S_IFDIR    0040000   // directory
+#endif
+#ifndef S_IFCHR
 #define S_IFCHR    0020000   // character device
+#endif
+#ifndef S_IFIFO
 #define S_IFIFO    0010000   // FIFO
+#endif
 #define get_file_type_by_dentry(__dentry) \
     (S_IFMT & (BPF_CORE_READ((__dentry), d_inode, i_mode)))
 #define get_file_type_by_path(__path) \
@@ -294,7 +310,7 @@ __always_inline static const char *get_true_behave(__u32 state_code) {
 	default:
 		break;
 	}
-    return "unkown";
+    return "";
 }
 
 static int bpf_strcmp(const char *s1, const char *s2) {

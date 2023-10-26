@@ -7,11 +7,13 @@
 #include <map>
 #include <unordered_map>
 #include <algorithm>
+#include <cstdio>
 
 typedef uint64_t __u64;
 typedef uint32_t __u32;
 typedef uint16_t __u16;
 typedef uint8_t __u8;
+/* 用于优化 CPU 预测分支 */
 #define likely(x)       __builtin_expect(!!(x), 1)
 #define unlikely(x)     __builtin_expect(!!(x), 0)
 #include "panorama.h"
@@ -46,17 +48,29 @@ int main(int argc, char* argv[]) {
 }
 
 void printStateTransitionTable() {
+    FILE *textPtr = fopen("stateTransitionTable.txt", "w");
+    FILE *binPtr = fopen("stateTransitionTable.stt", "wb");
+    if (!textPtr || !binPtr) {
+        fclose(textPtr);
+        fclose(binPtr);
+        cerr << "[Error] stt files open failed!" << endl;
+        return;
+    }
     for (const auto& p: stt) {
         __u32 oldCode;
-        __u16 sysid;
-        DE_KEY(p.first, oldCode, sysid);
+        __u32 peventId;
+        DE_KEY(p.first, oldCode, peventId);
         char oldCodeStr[32], newCodeStr[32];
         if (getStateStr(oldCode)) sprintf(oldCodeStr, "%s", getStateStr(oldCode));
         else sprintf(oldCodeStr, "%u", oldCode);
         if (getStateStr(p.second)) sprintf(newCodeStr, "%s", getStateStr(p.second));
         else sprintf(newCodeStr, "%u", p.second);
-        printf("{STT_KEY(%s, %s), %s},\n", oldCodeStr, getEventStr(sysid), newCodeStr);
+        fprintf(textPtr, "{STT_KEY(%s, %s), %s},\n", oldCodeStr, getEventStr(peventId), newCodeStr);
+        fwrite(&p, sizeof(p), 1, binPtr);
     }
+
+    fclose(textPtr);
+    fclose(binPtr);
 }
 
 pair<int, int> getLps(const __u32 *list, int len) {
@@ -234,8 +248,8 @@ const char *getStateStr(__u32 procCode) {
     return nullptr;
 }
 
-const char *getEventStr(__u32 sysid) {
-	switch (sysid) {
+const char *getEventStr(__u32 peventId) {
+	switch (peventId) {
 	case PEVENT_OPEN_READ: return "PEVENT_OPEN_READ";
 	case PEVENT_OPEN_WRITE: return "PEVENT_OPEN_WRITE";
 	case PEVENT_OPEN_COVER: return "PEVENT_OPEN_COVER";
