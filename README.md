@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.4.2-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.5.0-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -55,9 +55,9 @@ sudo ./genor
 # 测试中包含 scp 命令，因此，需要安装 docker，并在容器中开启 ssh
 ./test.sh
 # 这样，在 /var/log/genor.log 中就形成了中间文件，或者简化后的模式
-# 然后执行 stt，它会生成对应的状态转移表并输出在终端，拷贝粘贴到 panorama.c 
-# 的状态转移表中，然后重新 make 编译
-./stt
+# 然后执行 sttGenor，它会生成对应的状态转移表并保存在二进制和文本文件中
+# panorama 将加载状态转移表的二进制文件，并更新到内核 map 中 
+./sttGenor
 # 终端 1 中执行日志捕获程序
 sudo ./panorama
 # 终端 2 中执行 test.sh 测试文件，查看日志输出

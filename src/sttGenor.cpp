@@ -23,10 +23,17 @@ using namespace std;
 static vector<pair<__u32, vector<__u32>>> peventLists;
 static unordered_map<__u64, __u32> sttMap;
 static vector<pair<__u64, __u32>> stt;
-static __u32 newCode = 1;
+/* 进程名到进程码的映射 */
+unordered_map<string, __u32> procCodeMap;
+/* 进程码字符串形式到进程名的映射 */
+unordered_map<string, string> procNameMap;
+/* 进程码到进程码字符串形式的映射 */
+unordered_map<__u32, string> procCodeStr;
+static __u32 nextStateCode = 1, nextProcCode = 0x80000000;
+string null;
 
 __u32 getProcCode(const string& processName);
-const char *getStateStr(__u32 processStateCode);
+const string& getProcCodeStr(__u32 processCode);
 const char *getEventStr(__u32 panoramaEventId);
 int initPeventList(const string& filename);
 void genStateTransitionTable();
@@ -61,9 +68,9 @@ void printStateTransitionTable() {
         __u32 peventId;
         DE_KEY(p.first, oldCode, peventId);
         char oldCodeStr[32], newCodeStr[32];
-        if (getStateStr(oldCode)) sprintf(oldCodeStr, "%s", getStateStr(oldCode));
+        if (getProcCodeStr(oldCode).size()) sprintf(oldCodeStr, "%s", getProcCodeStr(oldCode).c_str());
         else sprintf(oldCodeStr, "%u", oldCode);
-        if (getStateStr(p.second)) sprintf(newCodeStr, "%s", getStateStr(p.second));
+        if (getProcCodeStr(p.second).size()) sprintf(newCodeStr, "%s", getProcCodeStr(p.second).c_str());
         else sprintf(newCodeStr, "%u", p.second);
         fprintf(textPtr, "{STT_KEY(%s, %s), %s},\n", oldCodeStr, getEventStr(peventId), newCodeStr);
         fwrite(&p, sizeof(p), 1, binPtr);
@@ -95,9 +102,13 @@ pair<int, int> getLps(const __u32 *list, int len) {
 }
 
 int initPeventList(const string& filename) {
-    ifstream ifs;
-    ifs.open(filename, ios::in);
-    if (!ifs.is_open()) return 1;
+    ifstream ifs(filename, ios::in);
+    ofstream ofs("../src/process.h", ios::out);
+    if (!ifs.is_open() || !ofs.is_open()) {
+        ifs.close();
+        ofs.close();
+        return 1;
+    }
 
     __u32 peventType;
     pid_t pid;
@@ -134,7 +145,6 @@ int initPeventList(const string& filename) {
      */
     unordered_map<__u32, int> priority(nextIndex);
     for (int i = 0; i < nextIndex; i++) {
-        cout << get_true_behave(peventLists[i].first) << endl;
         int n = peventLists[i].second.size();
         for (int j = 0; j < n; j++) {
             int span, unit;
@@ -153,7 +163,21 @@ int initPeventList(const string& filename) {
         return priority[a.first] <= priority[b.first];
     });
 
+    /* 将获得的所有进程码写入头文件中，构造对应的函数 */
+    ofs << "#ifndef PROCESS_H\n#define PROCESS_H\n" << endl;
+    for (const auto& p: procCodeStr) {
+        ofs << "#define " << p.second << " 0x" << hex << p.first << endl;
+    }
+    ofs << "\ninline static const char *get_true_behave(__u32 state_code) {"
+        << "\n\tswitch (state_code) {" << endl;
+    for (const auto& p: procNameMap) {
+        ofs << "\tcase " << p.first << ": return \""
+            << p.second << "\";" << endl;
+    }
+    ofs << "\tdefault: break;\n\t}\n\treturn \"\";\n}\n#endif" << endl;
+
     ifs.close();
+    ofs.close();
     return 0;
 }
 
@@ -182,7 +206,7 @@ void genStateTransitionTable() {
             tie(span, unit) = getLps(&pevents[i], len - i);
             /* 如果值为 0，则说明没有环，那么正常进行即可 */
             if (!span) {
-                if (i != len - 1) nextCode = newCode++;
+                if (i != len - 1) nextCode = nextStateCode++;
                 else nextCode = finalCode;
                 sttMap[key] = nextCode;
                 stt.emplace_back(key, nextCode);
@@ -191,7 +215,7 @@ void genStateTransitionTable() {
                 /* 这个时候需要注意，当前事件会不会是进程的最后 */
                 bool delay = false;
                 if (i + span == len) {
-                    if (likely(unit > 1 || i + span < len)) nextCode = newCode++;
+                    if (likely(unit > 1 || i + span < len)) nextCode = nextStateCode++;
                     else nextCode = finalCode;
                     sttMap[key] = nextCode;
                     stt.emplace_back(key, nextCode);
@@ -202,7 +226,7 @@ void genStateTransitionTable() {
                 auto oldState = curCode;
                 for (int j = (delay? 1: 0); j < (delay? unit: unit - 1); j++) {
                     /* 只有当前位置到了重复单元的最后部分，并且总重复长度后序列结束，才说明当前到达了序列的末端 */
-                    if (likely(j != unit - 1 || i + span < len)) nextCode = newCode++;
+                    if (likely(j != unit - 1 || i + span < len)) nextCode = nextStateCode++;
                     else nextCode = finalCode;
                     key = ((__u64)curCode << 32) | pevents[i + j];
                     sttMap[key] = nextCode;
@@ -225,42 +249,24 @@ void genStateTransitionTable() {
     }
 }
 
+
+
 __u32 getProcCode(const string& procName) {
-    if (procName == "cat") return STATE_CAT;
-    if (procName == "touch") return STATE_TOUCH;
-    if (procName == "rm") return STATE_RM;
-    if (procName == "mkdir") return STATE_MKDIR;
-    if (procName == "rmdir") return STATE_RMDIR;
-    if (procName == "mv") return STATE_MV;
-    if (procName == "cp") return STATE_CP;
-    if (procName == "gzip") return STATE_GZIP;
-    if (procName == "zip") return STATE_ZIP;
-    if (procName == "unzip") return STATE_UNZIP;
-    if (procName == "split") return STATE_SPLIT;
-    if (procName == "scp" || procName == "sshpass") return STATE_SCP;
-    if (procName == "ssh") return STATE_SSH;
-    if (procName == "sshd") return STATE_SSHD;
-    return 0xffff;
+    if (procCodeMap.count(procName)) return procCodeMap[procName];
+    procCodeMap.emplace(procName, nextProcCode);
+    string codeStr = "STATE_" + procName;
+    std::for_each(codeStr.begin() + 6, codeStr.end(), [](char& c) {
+        c = toupper((unsigned char)c);
+    });
+
+    procNameMap.emplace(codeStr, procName);
+    procCodeStr.emplace(nextProcCode, codeStr);
+    return nextProcCode++;
 }
 
-const char *getStateStr(__u32 procCode) {
-    switch (procCode) {
-    case STATE_CAT: return "STATE_CAT";
-    case STATE_TOUCH: return "STATE_TOUCH";
-    case STATE_RM: return "STATE_RM";
-    case STATE_MKDIR: return "STATE_MKDIR";
-    case STATE_RMDIR: return "STATE_RMDIR";
-    case STATE_MV: return "STATE_MV";
-    case STATE_CP: return "STATE_CP";
-    case STATE_GZIP: return "STATE_GZIP";
-    case STATE_ZIP: return "STATE_ZIP";
-    case STATE_UNZIP: return "STATE_UNZIP";
-    case STATE_SPLIT: return "STATE_SPLIT";
-    case STATE_SCP: return "STATE_SCP";
-    case STATE_SSH: return "STATE_SSH";
-    case STATE_SSHD: return "STATE_SSHD";
-    }
-    return nullptr;
+const string& getProcCodeStr(__u32 procCode) {
+    if (procCodeStr.count(procCode)) return procCodeStr[procCode];
+    return null;
 }
 
 const char *getEventStr(__u32 peventId) {

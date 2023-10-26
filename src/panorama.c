@@ -15,6 +15,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include "config.h"
+#include "process.h"
 #include "panorama.h"
 #include "panorama.skel.h"
 
