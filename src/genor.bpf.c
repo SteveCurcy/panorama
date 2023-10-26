@@ -19,12 +19,17 @@ struct sf_t {
 	pid_t pid;
 };
 
-/* 保存想要捕获的进程名的哈希值，以及对应的最终状态码 */
+/* 
+ * 保存想要捕获的进程名的哈希值，用于判断当前进程是否需要被采集；
+ * 旧版本中自动化生成状态机不完善，因此需要限制日志数量；
+ * 当前版本的自动化生成状态机基本完善，应去除该限制
+ * 因此，value 只保存 1B 即可
+ */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
 	__type(key, __u64);
-	__type(value, __u32);
+	__type(value, __u8);
 } maps_cap_hash SEC(".maps");
 /* 保存进程打开的文件的 fd */
 struct {
@@ -518,10 +523,6 @@ int tracepoint__syscalls__sys_enter_exit_group(struct trace_event_raw_sys_enter 
 	
 	__u32 *cnt = bpf_map_lookup_elem(&maps_cap_hash, &comm_hash);
 	if (!cnt) return 0;
-	*cnt -= 1;
-	if (*cnt <= 0) {
-		bpf_map_delete_elem(&maps_cap_hash, &comm_hash);
-	}
 
 	return 0;
 }

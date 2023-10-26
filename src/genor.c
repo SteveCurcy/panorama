@@ -15,24 +15,23 @@
 #include "genor.skel.h"
 #include "config.h"
 
-struct __entry {
-	const char *key;
-	__u32 val;
-} cap_entries[] = {
-	{"cat", 1},
-	{"touch", 1},
-	{"rm", 1},
-	{"mkdir", 1},
-	{"rmdir", 1},
-	{"gzip", 2},
-	{"zip", 2},
-	{"unzip", 1},
-	{"split", 1},
-	{"cp", 2},
-	{"mv", 4},
-	{"scp", 2},
-	{"ssh", 2},
-	{"sshd", 4}
+/* 该字符串数组用来记录一个白名单列表，其中保存
+ * 想要采集的进程名称，只有白名单中的进程行为模式才会被捕获 */
+const char *white_lists[] = {
+	"cat",
+	"touch",
+	"rm",
+	"mkdir",
+	"rmdir",
+	"gzip",
+	"zip",
+	"unzip",
+	"split",
+	"cp",
+	"mv",
+	"scp",
+	"ssh",
+	"sshd",
 };
 
 /* 保存当前程序是否正运行 */
@@ -126,10 +125,11 @@ int main(int argc, char **argv) {
 	}
 
 	/* 将需要过滤的进程哈希更新到 map 中 */
-	long cap_size = sizeof(cap_entries) / sizeof(struct __entry);
+	long cap_size = sizeof(white_lists) / sizeof(const char*);
+	__u8 dummy = 0;
 	for (int i = 0; i < cap_size; i++) {
-		__u64 hash_value = str_hash(cap_entries[i].key);
-		err = bpf_map__update_elem(skel->maps.maps_cap_hash, &hash_value, sizeof(__u64), &(cap_entries[i].val), sizeof(__u32), BPF_NOEXIST);
+		__u64 hash_value = str_hash(white_lists[i]);
+		err = bpf_map__update_elem(skel->maps.maps_cap_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
 		if (err < 0) {
 			fprintf(stderr, "Fialed to update maps\n");
 			return 2;

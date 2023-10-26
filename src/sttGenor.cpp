@@ -25,7 +25,7 @@ static unordered_map<__u64, __u32> sttMap;
 static vector<pair<__u64, __u32>> stt;
 static __u32 newCode = 1;
 
-__u16 getProcCode(const string& processName);
+__u32 getProcCode(const string& processName);
 const char *getStateStr(__u32 processStateCode);
 const char *getEventStr(__u32 panoramaEventId);
 int initPeventList(const string& filename);
@@ -117,26 +117,41 @@ int initPeventList(const string& filename) {
         }
         peventLists[indexs[pid]].second.emplace_back(peventType);
     }
-    // unordered_map<__u32, int> priority(nextIndex);    // 事先计算每个进程去重后的任务复杂度
-    // for (int i = 0; i < nextIndex; i++) {
-    //     int n = peventLists[i].second.size();
-    //     for (int j = 0; j < n; j++) {
-    //         int span, unit;
-    //         tie(span, unit) = getLps(&peventLists[i].second[j], n - j);
-    //         if (!span) {
-    //             priority[peventLists[i].first]++;
-    //         } else {
-    //             priority[peventLists[i].first] += unit - 1;
-    //             j += span - 1;
-    //         }
-    //     }
-    // }
+    /**
+     * 事先计算每个进程去重后的任务复杂度。
+     * 我们规定，一个进程的复杂度为整个事件列表去重后的长度：
+     * 一个进程产生的事件越多则月复杂。
+     * 
+     * 同样的，这也描绘了每个进程加入状态转移表的优先级：
+     * 我们规定，一个进程的复杂度越高，优先级越低。
+     * 这是因为，当一个复杂的进程加入状态转移表后，后来的简单
+     * 进程在加入状态转移表时可能会发现，可以一直沿着复杂进程
+     * 的状态转移走下去，结果最后简单进程的状态转移过程根本没被
+     * 记录。我们称之为“覆盖问题”。
+     * 
+     * 因此，为了解决覆盖问题，我们需要将简单的进程先加入
+     * 状态转移表中，确保简单的进程一定会被记录而不会被覆盖。
+     */
+    unordered_map<__u32, int> priority(nextIndex);
+    for (int i = 0; i < nextIndex; i++) {
+        cout << get_true_behave(peventLists[i].first) << endl;
+        int n = peventLists[i].second.size();
+        for (int j = 0; j < n; j++) {
+            int span, unit;
+            tie(span, unit) = getLps(&peventLists[i].second[j], n - j);
+            if (!span) {
+                priority[peventLists[i].first]++;
+            } else {
+                priority[peventLists[i].first] += unit - 1;
+                j += span - 1;
+            }
+        }
+    }
     /* 为了保证简单任务的事件序列不会被复杂任务的覆盖，
      * 将简单任务的排序到前面（这里认为简单任务的序列长度更短） */
-    // sort(peventLists.begin(), peventLists.end(), [](const auto& a, const auto& b) -> bool {
-    //     return a.second.size() <= b.second.size();
-    //     // return priority[a.first] <= priority[b.first];
-    // });
+    sort(peventLists.begin(), peventLists.end(), [&priority](const auto& a, const auto& b) -> bool {
+        return priority[a.first] <= priority[b.first];
+    });
 
     ifs.close();
     return 0;
@@ -210,7 +225,7 @@ void genStateTransitionTable() {
     }
 }
 
-uint16_t getProcCode(const string& procName) {
+__u32 getProcCode(const string& procName) {
     if (procName == "cat") return STATE_CAT;
     if (procName == "touch") return STATE_TOUCH;
     if (procName == "rm") return STATE_RM;

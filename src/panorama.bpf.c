@@ -26,7 +26,7 @@
  * <old_code><event>, <new_code>
  * - old_code 为旧状态码 -- 32bit；
  * - event 为触发状态转移的事件 -- 32bit；
- * - new_code 为新的状态码，即状态转移之后的状态码 */
+ * - new_code 为新的状态码，即状态转移之后的状态码 -- 32bit */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 4096);
@@ -208,8 +208,8 @@ static int tracepoint__syscalls__sys_exit(long ret) {
 	return pid;
 }
 
-/* 为了尽量保证程序的性能，对于系统调用监控，我们选用 tracepoint 进行实现 */
 /**
+ * 为了尽量保证程序的性能，对于系统调用监控，我们选用 tracepoint 进行实现
  * int openat(int dfd, const char *filename, int flags, umode_t mode);
  * 
  * 进入后，首先判断当前的状态码能否引起状态转移，（第一次调用时，状态码为 0），
@@ -283,22 +283,6 @@ int tracepoint__syscalls__sys_exit_openat(struct trace_event_raw_sys_exit *ctx) 
 	/* 更新文件信息 */
 	finfo_key = ((__u64) pid << 32) | ret;
 	err = bpf_map_update_elem(&maps_files, &finfo_key, new_finfo_ptr, BPF_ANY);
-	
-	/* deprecated 由于标准输出也会导致状态机的变化，因此在打开文件时，
-	 * 在初始状态下，自动将标准输出也添加到文件信息 map 中 */
-	/* 暂时不再记录标准输出的文件信息
-	struct p_state_t *cur_state_ptr = bpf_map_lookup_elem(&maps_cur, &pid);
-	if (!cur_state_ptr) {
-		struct p_finfo_t stdout;
-		__builtin_memset(&stdout, 0, sizeof(stdout));
-		stdout.fp.file.i_ino = 0;
-		__builtin_memcpy(&(stdout.fp.file.name), "stdout", sizeof("stdout"));
-		stdout.open_time = bpf_ktime_get_boot_ns();
-		stdout.operation = OP_WRITE;
-		stdout.type = S_IFCHR;
-		__u64 stdout_key = ((__u64) pid << 32) | 1;
-		err = bpf_map_update_elem(&maps_files, &stdout_key, &stdout, BPF_ANY);
-	} */
 
 	/* 更新状态信息 */
 	err = bpf_map_update_elem(&maps_cur, &pid, next_state_ptr, BPF_ANY);
@@ -651,22 +635,6 @@ int tracepoint__syscalls__sys_exit_dup3(struct trace_event_raw_sys_exit *ctx) {
 	return exit_dup(ctx);
 }
 
-/**
- * int socket(int family, int type, int protocol)
- * 由于 socket 函数并没有提供套接字相关的信息，因此我们考虑暂时弃用 socket 系统调用；
- * 通过 socket 获取的 fd 如果没有 connect 是没有意义的，因此不予处理也是合理的；
- * 对于 socket 获取的 fd 通过 connect 连接，则相关信息可以通过 connect 系统调用获取。
- *//*
-SEC("tp/syscalls/sys_enter_socket")
-int tracepoint__syscalls__sys_enter_socket(struct trace_event_raw_sys_enter *ctx) {
-	return 0;
-}
-SEC("tp/syscalls/sys_exit_socket")
-int tracepoint__syscalls__sys_exit_socket(struct trace_event_raw_sys_exit *ctx) {
-	return 0;
-}
-*/
-
 /* int connect(int fd, struct sockaddr *uservaddr, int addrlen) */
 SEC("tp/syscalls/sys_enter_connect")
 int tracepoint__syscalls__sys_enter_connect(struct trace_event_raw_sys_enter *ctx) {
@@ -729,15 +697,26 @@ int tracepoint__syscalls__sys_exit_connect(struct trace_event_raw_sys_exit *ctx)
 	return 0;
 }
 
-/* long accept(int fd, struct sockaddr *upeer_sockaddr, int upeer_addrlen) */
-// SEC("tp/syscalls/sys_enter_accept")
-// int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter *ctx) {
-// 	return 0;
-// }
-// SEC("tp/syscalls/sys_exit_accept")
-// int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit *ctx) {
-// 	return 0;
-// }
+/**
+ * accept 系统调用仅用来控制 socket 连接信息的输出；
+ * 对于 accept 捕获的 socket 连接无法进一步统计 socket
+ * 传输统计信息，因为该调用获得的 socket fd 通常会交给
+ * 子进程处理，导致无法统计传输信息。
+ * long accept(int fd, struct sockaddr *upeer_sockaddr, int upeer_addrlen)
+ */
+SEC("tp/syscalls/sys_enter_accept")
+int tracepoint__syscalls__sys_enter_accept(struct trace_event_raw_sys_enter *ctx) {
+	
+	tracepoint__syscalls__sys_enter(PEVENT_RENAME);
+	return 0;
+}
+SEC("tp/syscalls/sys_exit_accept")
+int tracepoint__syscalls__sys_exit_accept(struct trace_event_raw_sys_exit *ctx) {
+	
+	long ret = BPF_CORE_READ(ctx, ret);
+	tracepoint__syscalls__sys_exit(ret);
+	return 0;
+}
 
 /* long exit_group(int error_code) */
 SEC("tp/syscalls/sys_enter_exit_group")
@@ -1116,10 +1095,14 @@ int BPF_KRETPROBE(tcp_v4_connect_exit, long ret) {
 SEC("kretprobe/inet_csk_accept")
 int BPF_KRETPROBE(inet_csk_accept_exit, struct sock *newsk) {
 
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
     struct p_socket_t *net_info;
 	struct p_finfo_t new_sock;
 	long err = 0;
+
+	/* 通过状态机控制是否输出当前的连接请求 */
+	struct p_state_t *next_state_ptr = bpf_map_lookup_elem(&maps_nex, &pid);
+	if (!next_state_ptr) return 0;
 
     // pull in details
     u16 lport = 0, dport;
