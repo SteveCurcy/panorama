@@ -19,8 +19,9 @@ typedef uint8_t __u8;
 #include "panorama.h"
 using namespace std;
 
-/* 前一个为进程名对应的 ID，后一个为该进程的事件序列 */
-static vector<pair<__u32, vector<__u32>>> peventLists;
+/* 前一个为下标和进程名对应的 ID，后一个为该进程的事件序列 */
+static vector<pair<pair<int, __u32>, vector<__u32>>> peventLists;
+/* 记录状态转移表，从旧状态和事件到新状态的事件 */
 static unordered_map<__u64, __u32> sttMap;
 static vector<pair<__u64, __u32>> stt;
 /* 进程名到进程码的映射 */
@@ -123,7 +124,7 @@ int initPeventList(const string& filename) {
         ss >> pid >> procName >> peventType;
         if (!indexs.count(pid)) {
             /* 当前进程之前没有出现过，将其添加到 pid 到下标映射中 */
-            peventLists.emplace_back(getProcCode(procName), vector<__u32>());
+            peventLists.emplace_back(pair<int, __u32>(nextIndex, getProcCode(procName)), vector<__u32>());
             indexs.emplace(pid, nextIndex++);
         }
         peventLists[indexs[pid]].second.emplace_back(peventType);
@@ -143,16 +144,16 @@ int initPeventList(const string& filename) {
      * 因此，为了解决覆盖问题，我们需要将简单的进程先加入
      * 状态转移表中，确保简单的进程一定会被记录而不会被覆盖。
      */
-    unordered_map<__u32, int> priority(nextIndex);
+    vector<int> priority(nextIndex);
     for (int i = 0; i < nextIndex; i++) {
         int n = peventLists[i].second.size();
         for (int j = 0; j < n; j++) {
             int span, unit;
             tie(span, unit) = getLps(&peventLists[i].second[j], n - j);
             if (!span) {
-                priority[peventLists[i].first]++;
+                priority[i]++;
             } else {
-                priority[peventLists[i].first] += unit - 1;
+                priority[i] += unit - 1;
                 j += span - 1;
             }
         }
@@ -160,7 +161,7 @@ int initPeventList(const string& filename) {
     /* 为了保证简单任务的事件序列不会被复杂任务的覆盖，
      * 将简单任务的排序到前面（这里认为简单任务的序列长度更短） */
     sort(peventLists.begin(), peventLists.end(), [&priority](const auto& a, const auto& b) -> bool {
-        return priority[a.first] <= priority[b.first];
+        return priority[a.first.first] <= priority[b.first.first];
     });
 
     /* 将获得的所有进程码写入头文件中，构造对应的函数 */
@@ -190,7 +191,7 @@ void genStateTransitionTable() {
         int len = pevents.size();
         for (int i = 0; i < len; i++) {
             /* 首先我们查看是否已经保存了对应的记录 */
-            __u32 nextCode = peventInfo.first;
+            __u32 nextCode = peventInfo.first.second;
             __u32 finalCode = nextCode;
             __u32 pevent = pevents[i];
             __u64 key = ((__u64)curCode << 32) | pevent;
