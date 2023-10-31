@@ -1,8 +1,8 @@
 /**
- * @file panorama.h
- * @author Xu.Cao
+ * @file    panorama.h
+ * @author  Xu.Cao
  * @version v1.5.1
- * @date 2023-10-30
+ * @date    2023-10-30
  * @details 本头文件主要提供 panorama 项目的基础信息定义。主要包括：
  *  - 系统调用编号：  SYSCALL_*
  *  - 文件打开标志位，文件类型

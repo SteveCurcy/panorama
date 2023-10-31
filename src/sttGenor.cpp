@@ -8,11 +8,12 @@
 #include <unordered_map>
 #include <algorithm>
 #include <cstdio>
+#include <sys/types.h>
 
-typedef uint64_t __u64;
-typedef uint32_t __u32;
-typedef uint16_t __u16;
-typedef uint8_t __u8;
+typedef u_int64_t __u64;
+typedef u_int32_t __u32;
+typedef u_int16_t __u16;
+typedef u_int8_t __u8;
 /* 用于优化 CPU 预测分支 */
 #define likely(x)       __builtin_expect(!!(x), 1)
 #define unlikely(x)     __builtin_expect(!!(x), 0)

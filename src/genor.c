@@ -11,6 +11,7 @@
 #include <sys/types.h>
 #include <bpf/libbpf.h>
 #include <sys/resource.h>
+#include <linux/version.h>
 #include "panorama.h"
 #include "genor.skel.h"
 #include "config.h"
@@ -75,28 +76,24 @@ struct sf_t {
 
 static FILE *fp = NULL;
 
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 static void event_handler(void *ctx, int cpu, void *data, unsigned int data_sz) {
 #else
 static int event_handler(void *ctx, void *data, size_t data_sz) {
 #endif
 	struct sf_t *sf_ptr = (struct sf_t *)data;
 	fprintf(fp, "%u %s %u\n", sf_ptr->pid, sf_ptr->comm, sf_ptr->event);
-#if __KERNEL_VERSION>=508
+#if LINUX_VERSION >= KERNEL_VERSION(5, 8, 0)
 	return 0;
 #endif
 }
-#endif	// __KERNEL_VERSION
 
 int main(int argc, char **argv) {
 	struct genor_bpf *skel;
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 	struct perf_buffer *rb = NULL;
 #else
 	struct ring_buffer *rb = NULL;
-#endif
 #endif
 	long err = 0;
 
@@ -145,12 +142,11 @@ int main(int argc, char **argv) {
 
 	printf("Bpf programs have been attached successfully!\n");
 
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 	rb = perf_buffer__new(bpf_map__fd(skel->maps.rb), 4, event_handler, NULL, NULL, NULL);
 #else
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), event_handler, NULL, NULL);
-#endif
 #endif
 	if (!rb) {
 		err = -1;
@@ -165,15 +161,13 @@ int main(int argc, char **argv) {
 		 * - ring_buffer__consume 通过轮询的方式来获取事件，实时性更高但是性能损耗也更高；
 		 * 为了平衡性能和实时性，采用 ring_buffer__poll 方式将更好。 
 		 */
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 		err = perf_buffer__poll(rb, 100 /* 超时时间，100 ms */);
 #else
 		err = ring_buffer__poll(rb, 100);
 #endif
-#endif
-		/* Ctrl-C 会导致 -EINTR */
-		if (err == -EINTR) {
+		
+		if (err == -EINTR) {	/* Ctrl-C 会导致 -EINTR */
 			err = 0;
 			break;
 		}

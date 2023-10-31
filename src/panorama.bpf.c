@@ -1,8 +1,8 @@
 /**
- * @file panorama.bpf.c
- * @author Xu.Cao
+ * @file    panorama.bpf.c
+ * @author  Xu.Cao
  * @version v1.5.1
- * @date 2023-10-30
+ * @date    2023-10-30
  * @details 本源文件定义了将被插入到内核中的钩子函数，分别在系统调用和
  * 	内核函数入口和出口处进行监控。（说明：入口指函数开始位置；出口指函数
  * 	的返回位置）
@@ -21,18 +21,19 @@
  *  本源文件中的所有钩子函数都将被动态加载到内核中。本文件属于内核态代码；
  *  panorama.c 则是对应的用户态代码，本文件中的函数由 panorama.c 加载
  *  至内核中。
- * @see panorama.c
+ * @see     panorama.c
  * @history
  *  <author>    <time>    <version>    <desc>
  *  Xu.Cao      23/10/30    1.5.1    Format and Standardize this source
+ *  Xu.Cao      23/10/31    1.5.2    改用 Linux 头文件中提供的宏判断内核版本
  */
 #include "vmlinux.h"
 #include <bpf/bpf_endian.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
+#include <linux/version.h>
 #include "panorama.h"
-#include "config.h"
 
 /* 状态转移表，BPF_HASH;
  * state transition table 简写 stt,
@@ -108,8 +109,7 @@ struct {
 } maps_filter_hash SEC(".maps");
 
 /* 事件类型，将日志信息传输到用户空间 */
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 struct {
     __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
     __uint(key_size, sizeof(__u32));
@@ -120,7 +120,6 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 256 * 4096);
 } rb SEC(".maps");
-#endif
 #endif
 
 #ifndef fill_log
@@ -452,8 +451,7 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
     bpf_map_delete_elem(&maps_files, &file_key);
 
     if (pfinfo->op_cnt) {   // 只有文件被操作过，才有必要输出
-#ifdef __KERNEL_VERSION
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
         struct p_log_t log, *plog = &log;
         __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -466,11 +464,10 @@ int tracepoint__syscalls__sys_exit_close(struct trace_event_raw_sys_exit *ctx) {
                 bpf_ktime_get_ns() - pfinfo->open_time);
         bpf_core_read(&(plog->info), sizeof(*pfinfo), pfinfo);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
         bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
         bpf_ringbuf_submit(plog, 0);
-#endif
 #endif
     }
 
@@ -788,12 +785,11 @@ int BPF_KPROBE(vfs_open, const struct path *path, struct file *file) {
     return 0;
 }
 
-#ifdef __KERNEL_VERSION
 SEC("kprobe/vfs_unlink")
-#if __KERNEL_VERSION<600
+#if LINUX_VERSION < KERNEL_VERSION(6, 0, 0)
 int BPF_KPROBE(vfs_unlink, struct inode *dir,
                struct dentry *dentry, struct inode **delegated_inode) {
-#elif __KERNEL_VERSION<603
+#elif LINUX_VERSION < KERNEL_VERSION(6, 3, 0)
 int BPF_KPROBE(vfs_unlink, struct user_namespace *mnt_userns, struct inode *dir,
                struct dentry *dentry, struct inode **delegated_inode) {
 #else
@@ -829,7 +825,7 @@ int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
     bpf_map_delete_elem(&maps_temp_file, &pid);
     if (!pstate_next || !pfinfo || ret < 0) return 0;
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     struct p_log_t log, *plog = &log;
     __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -840,7 +836,7 @@ int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
     fill_log(*plog, pstate_next->ppid, pid, pstate_next->state_code, 0);
     bpf_core_read(&(plog->info), sizeof(plog->info), pfinfo);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
@@ -848,11 +844,9 @@ int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
 
     return 0;
 }
-#endif	// SEC("kprobe/vfs_unlink")
 
-#ifdef __KERNEL_VERSION
 SEC("kprobe/vfs_rename")
-#if __KERNEL_VERSION<512
+#if LINUX_VERSION < KERNEL_VERSION(5, 12, 0)
 int BPF_KPROBE(vfs_rename, struct inode *old_dir, struct dentry *old_dentry,
                   struct inode *new_dir, struct dentry *new_dentry,
                   struct inode **delegated_inode, unsigned int flags) {
@@ -896,7 +890,7 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
     struct dentry *new_dentry = *pnew_dentry;
 
     /* 输出源路径信息 */
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     struct p_log_t log, *plog = &log;
     __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -907,14 +901,14 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
     fill_log(*plog, pstate_next->ppid, pid, pstate_next->state_code, 0);
     bpf_core_read(&(plog->info), sizeof(plog->info), pfinfo);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
 #endif
 
     /* 输出被覆盖路径信息 */
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     // __builtin_memset(plog, 0, sizeof(log));
 #else
     struct p_log_t *plog = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
@@ -929,13 +923,14 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
         BPF_CORE_READ_STR_INTO(&(plog->info.fp.regular.name), new_dentry, d_iname);
         plog->info.operation = OP_COVER;
         plog->info.type = get_file_type_by_dentry(new_dentry);
-#if __KERNEL_VERSION<508
+
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
         bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
         bpf_ringbuf_submit(plog, 0);
 #endif
     } else {
-#if __KERNEL_VERSION>=508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
         bpf_ringbuf_discard(plog, 0);
 #endif
     }
@@ -944,15 +939,17 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
     /* 输出目的路径信息 */
     BPF_CORE_READ_STR_INTO(&(pfinfo->fp.regular.name), new_dentry, d_iname);
     pfinfo->operation = OP_RENAMETO;
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     // __builtin_memset(plog, 0, sizeof(log));
 #else
     log = bpf_ringbuf_reserve(&rb, sizeof(struct p_log_t), 0);
     if (!log) return 0;
 #endif
+
     fill_log(*plog, pstate_next->ppid, pid, pstate_next->state_code, 0);
     bpf_core_read(&(plog->info), sizeof(plog->info), pfinfo);
-#if __KERNEL_VERSION<508
+
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
@@ -960,14 +957,12 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
 
     return 0;
 }
-#endif	// SEC("kprobe/vfs_rename")
 
-#ifdef __KERNEL_VERSION
 SEC("kprobe/vfs_mkdir")
-#if __KERNEL_VERSION<600
+#if LINUX_VERSION < KERNEL_VERSION(6, 0, 0)
 int BPF_KPROBE(vfs_mkdir, struct inode *dir,
                struct dentry *dentry, umode_t mode) {
-#elif __KERNEL_VERSION<603
+#elif LINUX_VERSION < KERNEL_VERSION(6, 3, 0)
 int BPF_KPROBE(vfs_mkdir, struct user_namespace *mnt_userns,
                struct inode *dir, struct dentry *dentry, umode_t mode) {
 #else
@@ -995,7 +990,7 @@ int BPF_KRETPROBE(vfs_mkdir_exit, long ret) {
     if (!pstate_next || !pdentry || ret < 0) return 0;
 
     dentry = *pdentry;
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     struct p_log_t log, *plog = &log;
     __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -1009,7 +1004,7 @@ int BPF_KRETPROBE(vfs_mkdir_exit, long ret) {
     plog->info.operation = OP_CREATE;
     plog->info.type = get_file_type_by_dentry(dentry);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
@@ -1017,13 +1012,11 @@ int BPF_KRETPROBE(vfs_mkdir_exit, long ret) {
 
     return 0;
 }
-#endif	// SEC("kprobe/vfs_mkdir")
 
-#ifdef __KERNEL_VERSION
 SEC("kprobe/vfs_rmdir")
-#if __KERNEL_VERSION<600
+#if LINUX_VERSION < KERNEL_VERSION(6, 0, 0)
 int BPF_KPROBE(vfs_rmdir, struct inode *dir, struct dentry *dentry) {
-#elif __KERNEL_VERSION<603
+#elif LINUX_VERSION < KERNEL_VERSION(6, 3, 0)
 int BPF_KPROBE(vfs_rmdir, struct user_namespace *mnt_userns,
                struct inode *dir, struct dentry *dentry) {
 #else
@@ -1059,7 +1052,7 @@ int BPF_KRETPROBE(vfs_rmdir_exit, long ret) {
     bpf_map_delete_elem(&maps_temp_file, &pid);
     if (!pstate_next || !pfinfo || ret < 0) return 0;
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     struct p_log_t log, *plog = &log;
     __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -1070,7 +1063,7 @@ int BPF_KRETPROBE(vfs_rmdir_exit, long ret) {
     fill_log(*plog, pstate_next->ppid, pid, pstate_next->state_code, 0);
     bpf_core_read(&(plog->info), sizeof(plog->info), pfinfo);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
@@ -1078,7 +1071,6 @@ int BPF_KRETPROBE(vfs_rmdir_exit, long ret) {
 
     return 0;
 }
-#endif
 
 /* int tcp_v4_connect(struct sock *sk, struct sockaddr *uaddr, int addr_len) */
 SEC("kprobe/tcp_v4_connect")
@@ -1134,7 +1126,7 @@ int BPF_KRETPROBE(inet_csk_accept_exit, struct sock *newsk) {
     dport = BPF_CORE_READ(newsk, __sk_common.skc_dport);
     dport = bpf_ntohs(dport);
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     struct p_log_t log, *plog = &log;
     __builtin_memset(plog, 0, sizeof(log));
 #else
@@ -1150,7 +1142,7 @@ int BPF_KRETPROBE(inet_csk_accept_exit, struct sock *newsk) {
     plog->info.operation = OP_RECEIVE;
     plog->info.type = S_IFSOCK;
 
-#if __KERNEL_VERSION<508
+#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     bpf_perf_event_output(ctx, &rb, BPF_F_CURRENT_CPU, plog, sizeof(*plog));
 #else
     bpf_ringbuf_submit(plog, 0);
