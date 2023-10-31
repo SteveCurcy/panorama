@@ -1,6 +1,17 @@
-/* 
- * License-Identifier: BSD-3
- * Copyright (c) 2023 Steve.Curcy
+/**
+ * @file panorama.h
+ * @author Xu.Cao
+ * @version v1.5.1
+ * @date 2023-10-30
+ * @details 本头文件主要提供 panorama 项目的基础信息定义。主要包括：
+ *  - 系统调用编号：  SYSCALL_*
+ *  - 文件打开标志位，文件类型
+ *  - 状态转移触发事件：PEVENT_*
+ *  - 进程对文件的操作：OP_*
+ *  - 进程操作文件的行为结构体及其操作函数等。
+ * @history
+ *  <author>    <time>    <version>    <desc>
+ *  Xu.Cao      23/10/30    1.5.1    Format and Standardize this header
  */
 #ifndef PANORAMA_H
 #define PANORAMA_H
@@ -88,7 +99,14 @@
 #define PEVENT_OPEN_CREAT   0x00000004  // 创建
 #define PEVENT_OPEN_DIR     0x00000005  // 打开目录
 
-/* 根据打开方式获取上述事件类型 */
+/**
+ * @brief  根据 openat 打开方式获取事件码
+ * @note   根据 openat 和其打开文件的方式构成状态转移事件码
+ *         通常用于 openat 系统调用处理函数中
+ * @param  flags: openat 系统调用参数，标识文件打开方式
+ * @retval __u32 状态转移事件码
+ * @see    {@link panorama.bpf.c#tracepoint__syscalls__sys_enter_openat}
+ */
 static __u32 get_open_evnt(int flags) {
     if (flags & O_DIRECTORY) return PEVENT_OPEN_DIR;
     if (flags & O_CREAT) return PEVENT_OPEN_CREAT;
@@ -123,23 +141,13 @@ static __u32 get_open_evnt(int flags) {
 #define OP_RENAMED  10  // 用于被重命名
 #define OP_RENAMETO 11  // 用于重命名目标
 
-/* 状态转移表中的 flags 字段取值 */
-/* openat 系统调用部分标志 */
-#define FLAG_READ     0
-#define FLAG_CREATE   1
-#define FLAG_WRITE    2
-#define FLAG_COVER    3   // 文件被覆盖，通常出现在移动操作中
-#define FLAG_RDWR     4
-#define FLAG_DIR	  5
-
-/* 用于记录当前状态信息 */
+/* 保存当前进程的状态码和父进程号。
+ * 仅用于状态机的执行，维护进程状态 */
 struct p_state_t {
-    __u32 state_code;   // 状态码，在状态机中的位置
-    __u32 ppid;         // 父进程 pid，保存以节省再次获取的函数调用开销
+    __u32 state_code;
+    __u32 ppid;
 };
 
-/* 保存一个对等层的会话 socket，
- * 记录对等层的会话建立方向 */
 struct p_socket_t {
     __u32 from_ip;
     __u32 to_ip;
@@ -147,54 +155,51 @@ struct p_socket_t {
     __u16 to_port;
 };
 
-/* 保存文件名及 inode 信息 */
-struct p_common_file_t {
+struct p_regular_file_t {
     char name[32];
     __u32 i_ino;
 };
 
-/* 用于保存通用文件形式；包括普通文件和网络文件 */
 union p_file_t {
-    struct p_common_file_t file;
+    struct p_regular_file_t regular;
     struct p_socket_t socket;
 };
 
-/* 保存文件信息，包括文件结构体
- * 收发的字节数，文件类型 */
 struct p_finfo_t {
     union p_file_t fp;
-    ssize_t rx, tx;
-    __u64 open_time;
-    __u32 operation;
-    __u32 type;
-    __u32 op_cnt;   // 被操作的次数
+    ssize_t rx, tx;     // rx: 读出的字节数；tx 写入的流量
+    __u64 open_time;    // 打开时间
+    __u32 operation;    // 执行的操作，通常通过 openat 的打开方式确定
+    __u32 type;         // 文件类型，遵从系统定义
+    __u32 op_cnt;       // 被操作的次数，如果操作次数为 0 则没必要输出
 };
 
-/* 日志类型，用于输出到用户空间并进行保存 */
 struct p_log_t {
-    __u64 life;
+    __u64 life;         // 文件被操作的时长
     __u32 ppid, pid;
     __u32 uid;
-    __u32 state;
-    char comm[32];
+    __u32 state;        // 进程当前的状态码，仅用于 debug
+    char comm[32];      // 进程名
     struct p_finfo_t info;
 };
 
 /**
- * @param s 要计算哈希的字符串
- * @return 返回计算得到的哈希值
+ * @brief  通过字符串生成哈希值
+ * @note   根据输入的字符串，生成 64 位哈希值。用于进程过滤时判断进程名。
+ * @param  s: 待哈希的字符串
+ * @retval __u64 位哈希值
+ * @see    {@link panorama.bpf.c#ignore_proc}
  */
 static __u64 str_hash(const char *s) {
     __u64 _hash_value = 0;
 #pragma unroll(32)
-    for (int i = 0; i < 32; i++) {
-        if (s[i] == '\0') break;
+    for (int i = 0; i < 32 && s[i]; i++) {
         _hash_value = _hash_value * 31 + s[i];
     }
     return _hash_value;
 }
 
-#define NEW_STATE(_s, _ppid, _code) \
+#define FILL_STATE(_s, _ppid, _code) \
     __builtin_memset(&(_s), 0, sizeof((_s)));   \
     (_s).ppid = (_ppid);                        \
     (_s).state_code = (_code)
@@ -236,7 +241,11 @@ static __u64 str_hash(const char *s) {
 #define get_file_type_by_path(__path) \
     (S_IFMT & (BPF_CORE_READ((__path), dentry, d_inode, i_mode)))
 
-/* 通过操作字段获得操作名称的字符串 */
+/**
+ * @brief  获取进程操作的字符串表示
+ * @param  _operation_id: 操作码
+ * @retval const char* 行为操作的字符串表示
+ */
 __always_inline static const char *get_operation_str(__u32 _operation_id) {
 	switch (_operation_id) {
 	case OP_CREATE: return "created";
@@ -257,6 +266,11 @@ __always_inline static const char *get_operation_str(__u32 _operation_id) {
     return "unkown";
 }
 
+/**
+ * @brief  获取文件类型的字符串表示
+ * @param  _filetype: 文件类型
+ * @retval const char* 文件类型的字符串表示
+ */
 __always_inline static const char *get_filetype_str(__u32 _filetype) {
 	switch (_filetype) {
 	case S_IFSOCK: return "socket";
@@ -270,16 +284,6 @@ __always_inline static const char *get_filetype_str(__u32 _filetype) {
 		break;
 	}
     return "unkown";
-}
-
-static int bpf_strcmp(const char *s1, const char *s2) {
-    int ret = 0;
-#pragma unroll(32)
-    for (int i = 0; i < 32; i++) {
-        if (s1[i] == s2[i]) continue;
-        return s1[i] - s2[i];
-    }
-    return 0;
 }
 
 #endif // PANORAMA_H

@@ -72,7 +72,8 @@ static int event_handler(void *ctx, void *data, size_t data_sz) {
 		}
 		break;
 	default:
-		sprintf(file_info_str, "%s:%u", log->info.fp.file.name, log->info.fp.file.i_ino);
+		sprintf(file_info_str, "%s:%u", log->info.fp.regular.name,
+										log->info.fp.regular.i_ino);
 		break;
 	}
 

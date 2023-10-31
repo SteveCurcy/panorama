@@ -19,17 +19,18 @@ typedef uint8_t __u8;
 #include "panorama.h"
 using namespace std;
 
-/* 前一个为下标和进程名对应的 ID，后一个为该进程的事件序列 */
+/* 前一个为下标和进程状态码，后一个为该进程的事件序列 */
 static vector<pair<pair<int, __u32>, vector<__u32>>> peventLists;
+
 /* 记录状态转移表，从旧状态和事件到新状态的事件 */
 static unordered_map<__u64, __u32> sttMap;
-static vector<pair<__u64, __u32>> stt;
+
 /* 进程名到进程码的映射 */
 unordered_map<string, __u32> procCodeMap;
-/* 进程码字符串形式到进程名的映射 */
-unordered_map<string, string> procNameMap;
+
 /* 进程码到进程码字符串形式的映射 */
 unordered_map<__u32, string> procCodeStr;
+
 static __u32 nextStateCode = 1, nextProcCode = 0x80000000;
 string null;
 
@@ -64,7 +65,7 @@ void printStateTransitionTable() {
         cerr << "[Error] stt files open failed!" << endl;
         return;
     }
-    for (const auto& p: stt) {
+    for (const auto& p: sttMap) {
         __u32 oldCode;
         __u32 peventId;
         DE_KEY(p.first, oldCode, peventId);
@@ -113,18 +114,13 @@ int initPeventList(const string& filename) {
 
     __u32 peventType;
     pid_t pid;
-    string procName, line;
-
-    /* 利用 pid 将不同进程的事件序列分离，映射到不同的下标 */
+    string procName;
     unordered_map<pid_t, int> indexs;
-    int nextIndex = 0;
-    while (getline(ifs, line)) {
-        stringstream ss;
-        ss << line;
-        ss >> pid >> procName >> peventType;
+    int nextIndex = 0;  // 永远指向下一个可用的下标
+    while (ifs >> pid) {
+        ifs >> procName >> peventType;
         if (!indexs.count(pid)) {
-            /* 当前进程之前没有出现过，将其添加到 pid 到下标映射中 */
-            peventLists.emplace_back(pair<int, __u32>(nextIndex, getProcCode(procName)), vector<__u32>());
+            peventLists.emplace_back(make_pair(nextIndex, getProcCode(procName)), vector<__u32>());
             indexs.emplace(pid, nextIndex++);
         }
         peventLists[indexs[pid]].second.emplace_back(peventType);
@@ -132,17 +128,7 @@ int initPeventList(const string& filename) {
     /**
      * 事先计算每个进程去重后的任务复杂度。
      * 我们规定，一个进程的复杂度为整个事件列表去重后的长度：
-     * 一个进程产生的事件越多则月复杂。
-     * 
-     * 同样的，这也描绘了每个进程加入状态转移表的优先级：
-     * 我们规定，一个进程的复杂度越高，优先级越低。
-     * 这是因为，当一个复杂的进程加入状态转移表后，后来的简单
-     * 进程在加入状态转移表时可能会发现，可以一直沿着复杂进程
-     * 的状态转移走下去，结果最后简单进程的状态转移过程根本没被
-     * 记录。我们称之为“覆盖问题”。
-     * 
-     * 因此，为了解决覆盖问题，我们需要将简单的进程先加入
-     * 状态转移表中，确保简单的进程一定会被记录而不会被覆盖。
+     * 一个进程产生的事件越多则越复杂。
      */
     vector<int> priority(nextIndex);
     for (int i = 0; i < nextIndex; i++) {
@@ -158,10 +144,11 @@ int initPeventList(const string& filename) {
             }
         }
     }
+
     /* 为了保证简单任务的事件序列不会被复杂任务的覆盖，
      * 将简单任务的排序到前面（这里认为简单任务的序列长度更短） */
     sort(peventLists.begin(), peventLists.end(), [&priority](const auto& a, const auto& b) -> bool {
-        return priority[a.first.first] <= priority[b.first.first];
+        return priority[a.first.first] < priority[b.first.first];
     });
 
     /* 将获得的所有进程码写入头文件中，构造对应的函数 */
@@ -171,9 +158,9 @@ int initPeventList(const string& filename) {
     }
     ofs << "\ninline static const char *get_true_behave(__u32 state_code) {"
         << "\n\tswitch (state_code) {" << endl;
-    for (const auto& p: procNameMap) {
-        ofs << "\tcase " << p.first << ": return \""
-            << p.second << "\";" << endl;
+    for (const auto& p: procCodeMap) {
+        ofs << "\tcase " << procCodeStr[p.second] << ": return \""
+            << p.first << "\";" << endl;
     }
     ofs << "\tdefault: break;\n\t}\n\treturn \"\";\n}\n#endif" << endl;
 
@@ -210,7 +197,6 @@ void genStateTransitionTable() {
                 if (i != len - 1) nextCode = nextStateCode++;
                 else nextCode = finalCode;
                 sttMap[key] = nextCode;
-                stt.emplace_back(key, nextCode);
                 curCode = nextCode;
             } else {
                 /* 这个时候需要注意，当前事件会不会是进程的最后 */
@@ -219,7 +205,6 @@ void genStateTransitionTable() {
                     if (likely(unit > 1 || i + span < len)) nextCode = nextStateCode++;
                     else nextCode = finalCode;
                     sttMap[key] = nextCode;
-                    stt.emplace_back(key, nextCode);
                     curCode = nextCode;
                     delay = true;
                 }
@@ -232,7 +217,6 @@ void genStateTransitionTable() {
                     key = ((__u64)curCode << 32) | pevents[i + j];
                     sttMap[key] = nextCode;
                     curCode = nextCode;
-                    stt.emplace_back(key, nextCode);
                 }
                 /* 然后，最后一个事件回到原来的状态 */
                 pevent = pevents[i + (delay ? unit: unit - 1)];
@@ -240,7 +224,6 @@ void genStateTransitionTable() {
                 /* 这里需要注意，自旋的部分可能出现重复的状态转移 */
                 if (!sttMap.count(key)) {
                     sttMap[key] = oldState;
-                    stt.emplace_back(key, oldState);
                 }
                 curCode = oldState;
                 /* 由于后面 span 长度的都是重复，直接跳转到最后即可 */
@@ -260,7 +243,6 @@ __u32 getProcCode(const string& procName) {
         c = toupper((unsigned char)c);
     });
 
-    procNameMap.emplace(codeStr, procName);
     procCodeStr.emplace(nextProcCode, codeStr);
     return nextProcCode++;
 }

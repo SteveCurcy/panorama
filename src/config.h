@@ -1,23 +1,17 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#include "panorama.h"
-
 const char *filter_entrys[] = {
     "panorama", /* 过滤掉对自身的日志捕获 */
     "rpm",
     "dnf",
     "irqbalance",
-    "AliYunDunMonito",
+    "hostguard",
+    "hostwatch",
     "ps",
     "git",
-    // "cat",
     "sed",
     "node",
-    "AliYunDun",
-    "AliSecGuard",
-    "sssd_nss",
-    "AliYunDunUpdate"
 };
 
 /* 标识当前的内核版本号，必须指定，否则会报错；

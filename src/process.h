@@ -18,20 +18,20 @@
 
 inline static const char *get_true_behave(__u32 state_code) {
 	switch (state_code) {
-	case STATE_SSHD: return "sshd";
 	case STATE_CAT: return "cat";
-	case STATE_RMDIR: return "rmdir";
-	case STATE_ZIP: return "zip";
+	case STATE_TOUCH: return "touch";
 	case STATE_RM: return "rm";
 	case STATE_MKDIR: return "mkdir";
-	case STATE_TOUCH: return "touch";
+	case STATE_RMDIR: return "rmdir";
 	case STATE_GZIP: return "gzip";
-	case STATE_SPLIT: return "split";
-	case STATE_UNZIP: return "unzip";
+	case STATE_SSHD: return "sshd";
 	case STATE_CP: return "cp";
-	case STATE_SSH: return "ssh";
-	case STATE_SCP: return "scp";
+	case STATE_SPLIT: return "split";
+	case STATE_ZIP: return "zip";
+	case STATE_UNZIP: return "unzip";
 	case STATE_MV: return "mv";
+	case STATE_SCP: return "scp";
+	case STATE_SSH: return "ssh";
 	default: break;
 	}
 	return "";

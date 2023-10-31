@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-7.5.1-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.1-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -75,7 +75,7 @@ cat /var/log/panorama.log
 
 ## 现有问题
 
-目前使用的内核为 v5.4 版本，不支持 ringbuf，只能使用 perf event。但是 perf event 会存在性能低、事件乱序等问题，这导致由 genor 生成的行为模式也会受影响，从而不能符合原有行为的特征或出现误判。
+部分进程，如 split 命令执行到末尾会回到之前的状态，导致无法增加结束状态，从而无法判断该行为。
 
 ## 使用许可
 
