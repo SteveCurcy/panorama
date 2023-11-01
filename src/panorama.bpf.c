@@ -122,19 +122,6 @@ struct {
 } rb SEC(".maps");
 #endif
 
-#ifndef fill_log
-#define fill_log(log, _ppid, _pid, _state_code, _life)\
-    do {										\
-    __builtin_memset(&(log), 0, sizeof (log));  \
-    (log).ppid = (_ppid);   					\
-    (log).pid = (_pid);  						\
-    (log).uid = (u32) bpf_get_current_uid_gid();\
-    (log).state = (_state_code); 				\
-    (log).life = _life; 						\
-    bpf_get_current_comm(&(log).comm, 32);  	\
-    } while (0)
-#endif
-
 /**
  * @brief  清理结束的进程打开过的文件信息
  * @note   用于清理进程打开的文件信息，防止内存泄露。在
@@ -930,7 +917,7 @@ int BPF_KRETPROBE(vfs_rename_exit, long ret) {
         bpf_ringbuf_submit(plog, 0);
 #endif
     } else {
-#if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
+#if LINUX_VERSION >= KERNEL_VERSION(5, 8, 0)
         bpf_ringbuf_discard(plog, 0);
 #endif
     }

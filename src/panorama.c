@@ -1,5 +1,5 @@
 /**
- * @file 	panorama.bpf.c
+ * @file 	panorama.c
  * @author 	Xu.Cao
  * @version v1.5.1
  * @date 	2023-10-31
@@ -13,6 +13,7 @@
  * @history
  *  <author>    <time>    <version>    <desc>
  *  Xu.Cao      23/10/31    1.5.1    Format and Standardize this source
+ *  Xu.Cao      23/11/01    1.5.3    更新配置文件读取，实现简单配置文件处理
  */
 #include <pwd.h>
 #include <time.h>
@@ -27,26 +28,22 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include "config.h"
 #include "process.h"
 #include "panorama.h"
 #include "panorama.skel.h"
 
-FILE *fp = NULL;
+/* g_ 表示全局变量，pfh 表示文件句柄指针 */
+FILE *g_pfh_log = NULL;
+bool g_debug_mod = false;
+volatile bool g_is_running = true;
 
-volatile bool is_running = true;
 static void sig_handler(int sig) {
-    is_running = false;
+    g_is_running = false;
 }
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args) {
     return vfprintf(stderr, format, args);
 }
-
-struct __entry {
-    __u64 key;
-    __u32 val;
-};
 
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 static void event_handler(void *ctx, int cpu, void *data, unsigned int data_sz) {
@@ -94,7 +91,7 @@ static int event_handler(void *ctx, void *data, size_t data_sz) {
         sprintf(sbehav, "(%s)", sbehav_output);
     }
 
-    fprintf(fp, "%s %u %u %s %s%s %s %s %s %ld/%ld\n",
+    fprintf(g_pfh_log, "%s %u %u %s %s%s %s %s %s %ld/%ld\n",
             sdate_time, plog->ppid, plog->pid, pwd_info->pw_name, plog->comm,
             sbehav, get_operation_str(plog->info.operation),
             get_filetype_str(plog->info.type), sfinfo,
@@ -120,16 +117,6 @@ int main(int argc, char **argv) {
     signal(SIGINT, sig_handler);        /* 处理用户的终止命令 Ctrl-C */
     signal(SIGTERM, sig_handler);
 
-    #ifdef __DEBUG_MOD
-    fp = stdout;
-    #else
-    fp = fopen("/var/log/panorama.log", "w");
-    if (fp == NULL) {
-        fprintf(stderr, "Log file open failed!\n");
-        return 2;
-    }
-    #endif
-
     skel = panorama_bpf__open_and_load();   /* Load and verify BPF application */
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
@@ -143,15 +130,16 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    struct __entry stt_entry;
+    struct {
+        __u64 key;
+        __u32 val;
+    } stt_entry;
     while ((err = read(stt_fd, &stt_entry, sizeof(stt_entry)))) {
         if (err == -1) {
             goto cleanup;
         }
-        err = bpf_map__update_elem(skel->maps.maps_stt,
-                                   &stt_entry.key,
-                                   sizeof(__u64),
-                                   &stt_entry.val,
+        err = bpf_map__update_elem(skel->maps.maps_stt, &stt_entry.key,
+                                   sizeof(__u64), &stt_entry.val,
                                    sizeof(__u32), BPF_NOEXIST);
         if (err < 0) {
             fprintf(stderr, "Error updating map, there may be duplicated stt items.\n");
@@ -160,20 +148,63 @@ int main(int argc, char **argv) {
     }
     close(stt_fd);
 
-    long filter_size = sizeof(filter_entrys) / sizeof(const char *);
+    /* 一定要确保自身不会被监控 */
+    __u64 hash_value = str_hash("panorama");
     __u8 dummy = 0;
-    for (int i = 0; i < filter_size; i++) {
-        __u64 hash_value = str_hash(filter_entrys[i]);
-        bpf_map__update_elem(skel->maps.maps_filter_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
+    bpf_map__update_elem(skel->maps.maps_filter_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
+
+    FILE *pfh_cfg = fopen("./panorama.ini", "r");
+    if (!pfh_cfg) {
+        pfh_cfg = fopen("../src/panorama.ini", "r");
+    }
+
+    if (pfh_cfg) {   /* 存在配置文件，则直接暴力读取即可，因为只有几类参数，没必要单独写一个库 */
+        char sline[64] = {0};
+        while (fgets(sline, 64, pfh_cfg)) {
+
+            int len_line = strlen(sline);
+            if (sline[len_line - 1] == '\n') {
+                sline[len_line - 1] = '\0';
+            }
+
+            if (sline[0] == ';' || sline[0] == '#') {   // 忽略注释行
+                continue;
+            } else if (sline[0] == 'd' && sline[1] == 'e' && sline[2] == 'b'
+                       && sline[3] == 'u' && sline[4] == 'g' && sline[5] == '=') {
+                if (sline[6] == 't' && sline[7] == 'r'
+                    && sline[8] == 'u' && sline[9] == 'e') {
+                    g_debug_mod = true;
+                }
+            } else if (sline[0] == 'f' && sline[1] == 'i' && sline[2] == 'l'
+                       && sline[3] == 't' && sline[4] == 'e' && sline[5] == 'r'
+                       && sline[6] == '[' && sline[7] == ']' && sline[8] == '=') {
+                hash_value = str_hash(sline + 9);
+                err = bpf_map__update_elem(skel->maps.maps_filter_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
+                if (err < 0) {
+                    fprintf(stderr, "Error updating map, ingnored process name not be updated.\n");
+                    goto cleanup;
+                }
+            }
+        }
+        fclose(pfh_cfg);
+    }
+
+    if (g_debug_mod) {
+        g_pfh_log = stdout;
+    } else {
+        g_pfh_log = fopen("/var/log/panorama.log", "w");
+        if (!g_pfh_log) {
+            fprintf(stderr, "Failed to open log file!\n");
+            err = 2;
+            goto cleanup;
+        }
     }
 
     err = panorama_bpf__attach(skel);   /* Attach tracepoint handler */
     if (err) {
-        fprintf(stderr, "Failed to attach BPF skeleton\n");
+        fprintf(stderr, "Failed to attach BPF skeleton!\n");
         goto cleanup;
     }
-
-    printf("Bpf programs have been attached successfully!\n");
 
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
     rb = perf_buffer__new(bpf_map__fd(skel->maps.rb), 4, event_handler, NULL, NULL, NULL);
@@ -186,7 +217,9 @@ int main(int argc, char **argv) {
         goto cleanup;
     }
 
-    while (is_running) {
+    printf("Bpf programs have been attached successfully!\n");
+
+    while (g_is_running) {
         /**
          * eBPF 提供了 ring_buffer__poll 和 ring_buffer__consume 两个函数：
          * - ring_buffer__poll 通过 epoll 来获取事件，如果没有事件到达则等待；
@@ -211,8 +244,9 @@ int main(int argc, char **argv) {
 cleanup:
     panorama_bpf__destroy(skel);
     printf("\n");
-    #ifndef __DEBUG_MOD
-    fclose(fp);
-    #endif
+
+    if (!g_debug_mod) {
+        fclose(g_pfh_log);
+    }
     return -err;
 }

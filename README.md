@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.1-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.3-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -71,7 +71,7 @@ cat /var/log/panorama.log
 
 本项目主要分为了 genor 和 panorama 两个部分。其中 genor 是用来生成指定命令的行为模式，然后通过 sttGenor 根据行为模式生成状态机；panorama 则根据状态机识别进程行为并输出日志。
 
-首先调用 genor 将行为模式存储在 /var/log/genor.log 文件中，sttGenor 将读取该文件并输出生成的状态机。
+首先调用 genor 将行为模式存储在 /var/log/genor.log 文件中，sttGenor 将读取该文件并输出生成的状态机。现在 genor 和 panorama 都可以根据 ini 配置文件完成配置，而不需重新编译。
 
 ## 现有问题
 

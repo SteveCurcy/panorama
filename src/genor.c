@@ -1,6 +1,15 @@
-/* 
- * License-Identifier: BSD-3
- * Copyright (c) 2023 Steve.Curcy
+/**
+ * @file 	panorama.c
+ * @author 	Xu.Cao
+ * @version v1.5.3
+ * @date 	2023-11-01
+ * @details 本程序根据配置文件，捕获指定命令集的操作事件序列。
+ *  事件序列将是生成状态转移表的基础，可以通过 sttGenor 生成
+ *  对应的状态转移表。
+ * @see 	genor.bpf.c, sttGenor.cpp
+ * @history
+ *  <author>    <time>    <version>    <desc>
+ *  Xu.Cao      23/11/01    1.5.3    Format and Standardize this source
  */
 #include <pwd.h>
 #include <time.h>
@@ -14,171 +23,141 @@
 #include <linux/version.h>
 #include "panorama.h"
 #include "genor.skel.h"
-#include "config.h"
+#include "genor.h"
 
-/* 该字符串数组用来记录一个白名单列表，其中保存
- * 想要采集的进程名称，只有白名单中的进程行为模式才会被捕获 */
-const char *white_lists[] = {
-	"cat",
-	"touch",
-	"rm",
-	"mkdir",
-	"rmdir",
-	"gzip",
-	"zip",
-	"unzip",
-	"split",
-	"cp",
-	"mv",
-	"scp",
-	"ssh",
-	"sshd",
-};
+FILE *g_pfh_log = NULL;
+bool g_debug_mod = false;
+volatile bool g_is_running = true;
 
-/* 保存当前程序是否正运行 */
-static volatile bool is_running = true;
 static void sig_handler(int sig) {
-	is_running = false;
+    g_is_running = false;
 }
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args) {
-	return vfprintf(stderr, format, args);
+    return vfprintf(stderr, format, args);
 }
-
-__always_inline static const char *get_event_str(__u32 sysid) {
-	switch (sysid) {
-	case PEVENT_OPEN_READ: return "PEVENT_OPEN_READ";
-	case PEVENT_OPEN_WRITE: return "PEVENT_OPEN_WRITE";
-	case PEVENT_OPEN_COVER: return "PEVENT_OPEN_COVER";
-	case PEVENT_OPEN_RDWR: return "PEVENT_OPEN_RDWR";
-	case PEVENT_OPEN_CREAT: return "PEVENT_OPEN_CREAT";
-	case PEVENT_OPEN_DIR: return "PEVENT_OPEN_DIR";
-	case PEVENT_READ: return "PEVENT_READ";
-	case PEVENT_WRITE: return "PEVENT_WRITE";
-	case PEVENT_CLOSE: return "PEVENT_CLOSE";
-	case PEVENT_UNLINK_FILE: return "PEVENT_UNLINK_FILE";
-	case PEVENT_UNLINK_DIR: return "PEVENT_UNLINK_DIR";
-	case PEVENT_MKDIR: return "PEVENT_MKDIR";
-	case PEVENT_RENAME: return "PEVENT_RENAME";
-	case PEVENT_DUP: return "PEVENT_DUP";
-	case PEVENT_CONNECT: return "PEVENT_CONNECT";
-	case PEVENT_ACCEPT: return "PEVENT_ACCEPT";
-	default:
-		return "nil";
-	}
-}
-
-struct sf_t {
-	char comm[32];
-	__u32 event;
-	pid_t pid;
-};
-
-static FILE *fp = NULL;
 
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
 static void event_handler(void *ctx, int cpu, void *data, unsigned int data_sz) {
 #else
 static int event_handler(void *ctx, void *data, size_t data_sz) {
 #endif
-	struct sf_t *sf_ptr = (struct sf_t *)data;
-	fprintf(fp, "%u %s %u\n", sf_ptr->pid, sf_ptr->comm, sf_ptr->event);
+    struct sf_t *sf_ptr = (struct sf_t *)data;
+    fprintf(g_pfh_log, "%u %s %u\n", sf_ptr->pid, sf_ptr->comm, sf_ptr->event);
+
 #if LINUX_VERSION >= KERNEL_VERSION(5, 8, 0)
-	return 0;
+    return 0;
 #endif
 }
 
 int main(int argc, char **argv) {
-	struct genor_bpf *skel;
+    struct genor_bpf *skel;
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
-	struct perf_buffer *rb = NULL;
+    struct perf_buffer *rb = NULL;
 #else
-	struct ring_buffer *rb = NULL;
+    struct ring_buffer *rb = NULL;
 #endif
-	long err = 0;
+    long err = 0;
 
-	/* 设置 libbpf 打印错误和调试信息的回调函数 */
-	libbpf_set_print(libbpf_print_fn);
+    libbpf_set_print(libbpf_print_fn);
 
-	/* 处理用户的终止命令 Ctrl-C */
-	signal(SIGINT, sig_handler);
-	signal(SIGTERM, sig_handler);
+    signal(SIGINT, sig_handler);
+    signal(SIGTERM, sig_handler);
 
-#ifdef __DEBUG_MOD
-	fp = stdout;
-#else
-	fp = fopen("/var/log/genor.log", "w");
-	if (fp == NULL) {
-		fprintf(stderr, "Log file open failed!\n");
-		return 2;
-	}
-#endif
+    skel = genor_bpf__open_and_load();
+    if (!skel) {
+        fprintf(stderr, "Failed to open and load BPF skeleton\n");
+        return 1;
+    }
 
-	/* Load and verify BPF application */
-	skel = genor_bpf__open_and_load();
-	if (!skel) {
-		fprintf(stderr, "Failed to open and load BPF skeleton\n");
-		return 1;
-	}
+    __u64 hash_value = 0;
+    __u8 dummy = 0;
+    FILE *pfh_cfg = fopen("./genor.ini", "r");
+    if (!pfh_cfg) {
+        pfh_cfg = fopen("../src/genor.ini", "r");
+    }
 
-	/* 将需要过滤的进程哈希更新到 map 中 */
-	long cap_size = sizeof(white_lists) / sizeof(const char*);
-	__u8 dummy = 0;
-	for (int i = 0; i < cap_size; i++) {
-		__u64 hash_value = str_hash(white_lists[i]);
-		err = bpf_map__update_elem(skel->maps.maps_cap_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
-		if (err < 0) {
-			fprintf(stderr, "Fialed to update maps\n");
-			return 2;
-		}
-	}
+    if (pfh_cfg) {
+        char sline[64] = {0};
+        while (fgets(sline, 64, pfh_cfg)) {
 
-	/* Attach tracepoint handler */
-	err = genor_bpf__attach(skel);
-	if (err) {
-		fprintf(stderr, "Failed to attach BPF skeleton\n");
-		goto cleanup;
-	}
+            int len_line = strlen(sline);
+            if (sline[len_line - 1] == '\n') {
+                sline[len_line - 1] = '\0';
+            }
 
-	printf("Bpf programs have been attached successfully!\n");
+            if (sline[0] == ';' || sline[0] == '#') {   // 忽略注释行
+                continue;
+            } else if (sline[0] == 'd' && sline[1] == 'e' && sline[2] == 'b'
+                       && sline[3] == 'u' && sline[4] == 'g' && sline[5] == '=') {
+                if (sline[6] == 't' && sline[7] == 'r'
+                    && sline[8] == 'u' && sline[9] == 'e') {
+                    g_debug_mod = true;
+                }
+            } else if (sline[0] == 'c' && sline[1] == 'o' && sline[2] == 'n'
+                       && sline[3] == 'c' && sline[4] == 'e' && sline[5] == 'r'
+                       && sline[6] == 'n' && sline[7] == '[' && sline[8] == ']'
+                       && sline[9] == '=') {
+                hash_value = str_hash(sline + 10);
+                err = bpf_map__update_elem(skel->maps.maps_cap_hash, &hash_value, sizeof(__u64), &dummy, sizeof(__u8), BPF_NOEXIST);
+                if (err < 0) {
+                    fprintf(stderr, "Error updating map, concerned process name not be updated.\n");
+                    goto cleanup;
+                }
+            }
+        }
+        fclose(pfh_cfg);
+    }
 
+    if (g_debug_mod) {
+        g_pfh_log = stdout;
+    } else {
+        g_pfh_log = fopen("/var/log/genor.log", "w");
+        if (!g_pfh_log) {
+            fprintf(stderr, "Failed to open log file!\n");
+            err = 2;
+            goto cleanup;
+        }
+    }
+
+    err = genor_bpf__attach(skel);
+    if (err) {
+        fprintf(stderr, "Failed to attach BPF skeleton\n");
+        goto cleanup;
+    }
 
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
-	rb = perf_buffer__new(bpf_map__fd(skel->maps.rb), 4, event_handler, NULL, NULL, NULL);
+    rb = perf_buffer__new(bpf_map__fd(skel->maps.rb), 4, event_handler, NULL, NULL, NULL);
 #else
-	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), event_handler, NULL, NULL);
+    rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), event_handler, NULL, NULL);
 #endif
-	if (!rb) {
-		err = -1;
-		fprintf(stderr, "Failed to create ring buffer\n");
-		goto cleanup;
-	}
+    if (!rb) {
+        err = -1;
+        fprintf(stderr, "Failed to create ring buffer\n");
+        goto cleanup;
+    }
 
-	while (is_running) {
-		/**
-		 * eBPF 提供了 ring_buffer__poll 和 ring_buffer__consume 两个函数：
-		 * - ring_buffer__poll 通过 epoll 来获取事件，如果没有事件到达则等待；
-		 * - ring_buffer__consume 通过轮询的方式来获取事件，实时性更高但是性能损耗也更高；
-		 * 为了平衡性能和实时性，采用 ring_buffer__poll 方式将更好。 
-		 */
+    printf("Bpf programs have been attached successfully!\n");
+
+    while (g_is_running) {
 #if LINUX_VERSION < KERNEL_VERSION(5, 8, 0)
-		err = perf_buffer__poll(rb, 100 /* 超时时间，100 ms */);
+        err = perf_buffer__poll(rb, 100 /* 超时时间，100 ms */);
 #else
-		err = ring_buffer__poll(rb, 100);
+        err = ring_buffer__poll(rb, 100);
 #endif
-		
-		if (err == -EINTR) {	/* Ctrl-C 会导致 -EINTR */
-			err = 0;
-			break;
-		}
-		if (err < 0) {
-			printf("Error polling perf buffer: %ld\n", err);
-			break;
-		}
-	}
+        
+        if (err == -EINTR) {	/* Ctrl-C 会导致 -EINTR */
+            err = 0;
+            break;
+        }
+        if (err < 0) {
+            printf("Error polling perf buffer: %ld\n", err);
+            break;
+        }
+    }
 
 cleanup:
 
-	genor_bpf__destroy(skel);
-	return -err;
+    genor_bpf__destroy(skel);
+    return -err;
 }

@@ -183,6 +183,19 @@ struct p_log_t {
     struct p_finfo_t info;
 };
 
+#ifndef fill_log
+#define fill_log(log, _ppid, _pid, _state_code, _life)\
+    do {										\
+    __builtin_memset(&(log), 0, sizeof (log));  \
+    (log).ppid = (_ppid);   					\
+    (log).pid = (_pid);  						\
+    (log).uid = (u32) bpf_get_current_uid_gid();\
+    (log).state = (_state_code); 				\
+    (log).life = _life; 						\
+    bpf_get_current_comm(&(log).comm, 32);  	\
+    } while (0)
+#endif
+
 /**
  * @brief  通过字符串生成哈希值
  * @note   根据输入的字符串，生成 64 位哈希值。用于进程过滤时判断进程名。
@@ -284,6 +297,34 @@ __always_inline static const char *get_filetype_str(__u32 _filetype) {
 		break;
 	}
     return "unkown";
+}
+
+/**
+ * @brief  获取状态转移事件的字符串表示
+ * @param  pevent_code: 状态转移事件码
+ * @retval const char* 状态转移事件的字符串表示
+ */
+__always_inline static const char *get_event_str(__u32 pevent_code) {
+    switch (pevent_code) {
+    case PEVENT_OPEN_READ: return "PEVENT_OPEN_READ";
+    case PEVENT_OPEN_WRITE: return "PEVENT_OPEN_WRITE";
+    case PEVENT_OPEN_COVER: return "PEVENT_OPEN_COVER";
+    case PEVENT_OPEN_RDWR: return "PEVENT_OPEN_RDWR";
+    case PEVENT_OPEN_CREAT: return "PEVENT_OPEN_CREAT";
+    case PEVENT_OPEN_DIR: return "PEVENT_OPEN_DIR";
+    case PEVENT_READ: return "PEVENT_READ";
+    case PEVENT_WRITE: return "PEVENT_WRITE";
+    case PEVENT_CLOSE: return "PEVENT_CLOSE";
+    case PEVENT_UNLINK_FILE: return "PEVENT_UNLINK_FILE";
+    case PEVENT_UNLINK_DIR: return "PEVENT_UNLINK_DIR";
+    case PEVENT_MKDIR: return "PEVENT_MKDIR";
+    case PEVENT_RENAME: return "PEVENT_RENAME";
+    case PEVENT_DUP: return "PEVENT_DUP";
+    case PEVENT_CONNECT: return "PEVENT_CONNECT";
+    case PEVENT_ACCEPT: return "PEVENT_ACCEPT";
+    default:
+        return "nil";
+    }
 }
 
 #endif // PANORAMA_H
