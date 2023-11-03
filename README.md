@@ -1,6 +1,6 @@
 # Panorama
 
-[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.3-yellow)
+[![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.4-yellow)
 
 Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
 
@@ -76,6 +76,8 @@ cat /var/log/panorama.log
 ## 现有问题
 
 部分进程，如 split 命令执行到末尾会回到之前的状态，导致无法增加结束状态，从而无法判断该行为。
+
+存在部分进程行为的误报，这是由于不同进程可能存在某一段行为相同，会导致中间状态出现误报。
 
 ## 使用许可
 

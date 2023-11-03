@@ -1,5 +1,5 @@
 /**
- * @file 	panorama.c
+ * @file 	genor.c
  * @author 	Xu.Cao
  * @version v1.5.3
  * @date 	2023-11-01
@@ -157,7 +157,7 @@ int main(int argc, char **argv) {
     }
 
 cleanup:
-
     genor_bpf__destroy(skel);
+    printf("\n");
     return -err;
 }
