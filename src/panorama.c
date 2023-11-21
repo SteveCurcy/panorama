@@ -184,7 +184,7 @@ int main(int argc, char **argv) {
     int fd_meta = open("meta.stt", O_RDONLY);
     if (fd_meta < 0) {
         fprintf(stderr, "Failed to load the stt meta file! \
-                No such file named stateTransitionTable.stt!\n");
+                No such file named meta.stt!\n");
         err = fd_stt;
         goto cleanup;
     }

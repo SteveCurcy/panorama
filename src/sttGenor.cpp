@@ -292,6 +292,9 @@ void print_STT() {
             sprintf(new_state_str, "%u", p.second);
         }
 
+        if (get_event_str(pevent)[0] == 'n') {
+            printf("[Error] %s %d %s\n", old_state_str, pevent, new_state_str);
+        }
         fprintf(pfh_text, "{STT_KEY(%s, %s), %s},\n", old_state_str, get_event_str(pevent), new_state_str);
         fwrite(&p, sizeof(p), 1, pfh_bin);
     }
