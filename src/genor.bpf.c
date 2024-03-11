@@ -392,6 +392,8 @@ static void enter_dup(struct trace_event_raw_sys_enter *ctx) {
     int newfd = BPF_CORE_READ(ctx, args[1]);
     __u64 fds = (__u64) oldfd << 32 | newfd;
     bpf_map_update_elem(&maps_fds, &pid, &fds, BPF_ANY);
+
+    tracepoint__syscalls__sys_enter(PEVENT_DUP);
 }
 
 static void exit_dup(struct trace_event_raw_sys_exit *ctx) {
@@ -410,6 +412,8 @@ static void exit_dup(struct trace_event_raw_sys_exit *ctx) {
     bpf_map_delete_elem(&maps_file_opend, &dummy_key);
     dummy_key = ((__u64) pid << 32) | (*pfds & 0xffffffff);
     long err = bpf_map_update_elem(&maps_file_opend, &dummy_key, dummy, BPF_ANY);
+
+    tracepoint__syscalls__sys_exit(ctx, ret, SYSCALL_DUP2);
 }
 
 /* int dup2(int oldfd, int newfd) */

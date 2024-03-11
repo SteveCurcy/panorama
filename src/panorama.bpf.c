@@ -157,7 +157,7 @@ __always_inline static bool ignore_proc() {
 }
 
 /**
- * @brief  系统调用入口的统一处理函数
+ * @brief  输入事件入口的统一处理函数
  * @note   只根据当前的事件编号进行状态转移，如果当前进程不在“被忽略
  *         列表”中，则根据进程状态和当前事件编号计算下一个可能的状态。
  * @param  event: 触发状态转移的事件
@@ -625,6 +625,9 @@ static int enter_dup(struct trace_event_raw_sys_enter *ctx) {
     __u64 pair_fds = (__u64) oldfd << 32 | newfd;
     bpf_map_update_elem(&maps_temp_fd, &pid, &pair_fds, BPF_ANY);
 
+    // 将 dup 加入到自动机模型中
+    tracepoint__syscalls__sys_enter(PEVENT_DUP);
+
     return 0;
 }
 
@@ -647,6 +650,8 @@ static int exit_dup(struct trace_event_raw_sys_exit *ctx) {
     file_key = ((__u64) pid << 32) | (*ppair_fds & 0xffffffff);
     pfinfo->op_cnt++;
     long err = bpf_map_update_elem(&maps_files, &file_key, pfinfo, BPF_ANY);
+
+    tracepoint__syscalls__sys_exit(ret);
 
     return 0;
 }
