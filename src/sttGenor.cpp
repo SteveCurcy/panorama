@@ -55,6 +55,8 @@ string null;
 __u32 get_end_state(const string& proc_name);
 const string& get_end_state_str(__u32 proc_code);
 int init_vec_pevents(const string& filename, bool to_sort = true);
+inline bool has_edge(__u32& old_state, __u32 event);
+inline void add_edge(__u32& old_state, __u32 event, __u32 new_state);
 void genor_STT();
 void print_STT();
 pair<int, int> find_ring(const __u32 *list, int len);
@@ -179,9 +181,33 @@ int init_vec_pevents(const string& filename, bool to_sort) {
 }
 
 /**
+ * @brief  查看，当前输入事件导致的状态转移是否已经保存，如果保存根据该状态转移更新当前状态
+ * @param  old_state: 旧状态
+ * @param  event: 触发状态转移的输入事件
+ * @retval 返回是否已经存在转移后的新状态
+ */
+bool has_edge(__u32& old_state, __u32 event) {
+    __u64 key = ((__u64)old_state << 32) | event;
+    bool ret = false;
+    if (g_stt.count(key)) {
+        old_state = g_stt[key];
+        ret = true;
+    }
+    return ret;
+}
+
+/**
+ * @brief  添加新的状态转移对应的边，添加后更新当前状态
+ * @retval None
+ */
+void add_edge(__u32& old_state, __u32 event, __u32 new_state) {
+    g_stt[((__u64)old_state << 32) | event] = new_state;
+    old_state = new_state;
+}
+
+/**
  * @brief  根据各进程的操作事件序列生成状态转移表
  * @note   依次将进程的序列加入到状态转移表中，通常需要先排序
- * @todo   多个进程同时添加到状态转移表中，效果会更好
  * @retval None
  * @see    init_vec_pevents
  */
@@ -198,10 +224,8 @@ void genor_STT() {
             
             __u32 next_state = end_state;
             __u32 pevent = pevents_list[i];
-            __u64 key = ((__u64)cur_state << 32) | pevent;
 
-            if (g_stt.count(key)) {
-                cur_state = g_stt[key];
+            if (has_edge(cur_state, pevent)) {
                 continue;
             }
 
@@ -214,23 +238,21 @@ void genor_STT() {
                 } else {
                     next_state = end_state;
                 }
-                g_stt[key] = next_state;
-                cur_state = next_state;
+                add_edge(cur_state, pevent, next_state);
             } else {
 
-                bool delay = false;
-                if (i + span == pevents_list_len) {
+                bool end_with_ring = false;   // 记录是否以该环为结尾
+                if (i + span == pevents_list_len) { // 如果通过环到达行为模式结尾
                     if (likely(ring > 1)) next_state = g_next_state++;
-                    else next_state = end_state;
+                    else next_state = end_state;  // 如果这个环中只有一个节点
 
-                    g_stt[key] = next_state;
-                    cur_state = next_state;
-                    delay = true;
+                    add_edge(cur_state, pevent, next_state);
+                    end_with_ring = true;
                 }
 
                 auto stash_state = cur_state;
-                int handle_start = delay ? 1 : 0,
-                    handle_length = delay ? ring : ring - 1;
+                int handle_start = end_with_ring ? 1 : 0,
+                    handle_length = end_with_ring ? ring : ring - 1;
                 for (int j = handle_start; j < handle_length; j++) {
 
                     if (likely(j != handle_length - 1 || i + span < pevents_list_len)) {
@@ -238,18 +260,12 @@ void genor_STT() {
                     } else {
                         next_state = end_state; // 到达环的末尾，且环位于进程结束，到达终止态
                     }
-                    key = ((__u64)cur_state << 32) | pevents_list[i + j];
-                    g_stt[key] = next_state;
-                    cur_state = next_state;
+                    add_edge(cur_state, pevents_list[i + j], next_state);
                 }
 
+                // 添加从当前位置到环开始的位置，形成闭环
                 pevent = pevents_list[i + handle_length];
-                key = ((__u64)cur_state << 32) | pevent;
-
-                if (!g_stt.count(key)) {
-                    g_stt[key] = stash_state;
-                }
-                cur_state = stash_state;
+                add_edge(cur_state, pevent, stash_state);
 
                 i += span - 1;
             }
