@@ -2,7 +2,7 @@
 
 [![](https://img.shields.io/badge/Author-Xu.Cao-lightgreen)](https://github.com/SteveCurcy) [![](https://img.shields.io/badge/Dependencies-libbpf-blue)](https://github.com/libbpf/libbpf-bootstrap) ![](https://img.shields.io/badge/Version-1.5.6-yellow)
 
-Panorama 是一个用于产生高级行为日志的日志采集系统。它将采集用户的行为而非海量系统或应用日志。
+Panorama 是一个用于产生高级行为日志的监控系统。它将采集进程的行为而非海量系统或应用日志。
 
 本程序基于 libbpf-bootstrap 进行二次开发。
 
@@ -33,10 +33,11 @@ dnf install clang elfutils-libelf elfutils-libelf-devel zlib-devel cmake
 
 ### 项目构建
 
-我们推荐在部署编译的时候创建一个单独的路径，如 build。然后执行对应的编译构建命令。
+我们推荐在部署编译的时候创建一个单独的路径，如 build。然后执行对应的编译构建命令。本项目的所有源代码都放置在 src 目录下，主要包括 genor 行为模式采集、sttGenor 自动机规则生成工具和 panorama 系统监控工具。
 
 ```shell
-# 当前路径为 panorama 项目根目录
+git clone https://github.com/SteveCurcy/panorama.git
+cd panorama
 git submodule update --init --recursive # 初始化依赖库
 mkdir build && cd build
 cmake ../src
@@ -46,7 +47,18 @@ clang++ -O3 ../src/sttGenor.cpp -o sttGenor
 
 ## 示例
 
-新增了测试样例，您可以直接使用测试样例进行测试。
+在使用前，需要编写关注的行为脚本。例如：希望监控 cat、touch 命令的行为，则可以编写以下脚本：
+
+```bash
+cat c1
+cat c1 c2
+touch t1
+rm t1
+touch t1 t2
+rm t1 t2
+```
+
+其中需要注意编写使用命令进行多文件操作，这样可以使 genor 和 sttGenor 获取更准确的进程行为。为了实现系统监控并识别进程的行为，首先需要获取自动机的识别规则。通过 genor 命令获取上述脚本中的命令的行为模式，并使用 sttGenor 将行为模式转换为自动机执行规则即可。最后，执行 panorama 工具开启系统监控即可。
 
 ```shell
 # terminal 1 首先执行 build 路径下 genor
@@ -54,7 +66,7 @@ sudo ./genor
 # terminal 2 再执行 test 路径下 test.sh
 # 测试中包含 scp 命令，因此，需要安装 docker，并在容器中开启 ssh
 ./test.sh
-# 这样，在 /var/log/genor.log 中就形成了中间文件，或者简化后的模式
+# 这样，在 /var/log/genor.log 中就得到了脚本中包含的命令的行为模式。
 # 然后执行 sttGenor，它会生成对应的状态转移表并保存在二进制和文本文件中
 # panorama 将加载状态转移表的二进制文件，并更新到内核 map 中 
 ./sttGenor
@@ -67,17 +79,9 @@ cat /var/log/panorama.log
 <...>
 ```
 
-## 说明
-
-本项目主要分为了 genor 和 panorama 两个部分。其中 genor 是用来生成指定命令的行为模式，然后通过 sttGenor 根据行为模式生成状态机；panorama 则根据状态机识别进程行为并输出日志。
-
-首先调用 genor 将行为模式存储在 /var/log/genor.log 文件中，sttGenor 将读取该文件并输出生成的状态机。现在 genor 和 panorama 都可以根据 ini 配置文件完成配置，而不需重新编译。
-
 ## 现有问题
 
-部分进程，如 split 命令执行到末尾会回到之前的状态，导致无法增加结束状态，从而无法判断该行为。
-
-存在部分进程行为的误报，这是由于不同进程可能存在某一段行为相同，会导致中间状态出现误报。
+暂无。但是随着加入的行为增多，可能出现某些行为的输入事件序列完全相同的情况，进而出现误报或漏报。
 
 ## 使用许可
 
