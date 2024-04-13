@@ -1,6 +1,8 @@
 #include <bpf/libbpf.h>
 #include "se.skel.h"
+#include "se.h"
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -38,30 +40,51 @@ int main(int argc, char *argv[]) {
 
     printf("LSM loaded! ctrl+c to exit.\n");
 
-    /*The BPF link is not pinned, therefore exiting will remove program
-    for (;;) {
-        fprintf(stderr, ".");
-        sleep(1);
-    }*/
     pid_t pid = 0;
     char path[256];
+    char permission[8];
     unsigned char dummy = 0;
     while (true) {
-        printf("Enter malicious pid and inode of file not to be executed: ");
+        printf("Enter malicious pid, target and permission: ");
         memset(path, 0, 256);   // Ensure the path will never be overwritten.
-        scanf("%d %s", &pid, path);
+        memset(permission, 0, 8);
+        scanf("%d %s %s", &pid, path, permission);
 
         struct stat st;
         if (stat(path, &st) == -1) {
             printf("There is no such file: %s\n", path);
             continue;
         }
+
+        if (permission[3] != '\0') {
+            printf("The permission of file can be 'rwx' at most!\n");
+            continue;
+        }
+
+        // check every permission of input
+        unsigned char real_permission = 0;
+        unsigned char is_valid = 1;
+        int per_len = strlen(permission);
+        for (int i = 0; i < per_len; i++) {
+            switch (permission[i]) {
+            case 'r': real_permission |= MAY_READ; break;
+            case 'w': real_permission |= MAY_WRITE; break;
+            case 'x': real_permission |= MAY_EXEC; break;
+            default:
+                printf("No such permission named %c, only r/w/x is supported!\n", permission[i]);
+                is_valid = 0;
+                break;
+            }
+            if (!is_valid) break;
+        }
+        if (!is_valid) continue;
         
         // printf("%d,%s:%lu\n", pid, path, st.st_ino);
         unsigned long long key = ((unsigned long long)pid << 32) | st.st_ino;
         err = bpf_map__update_elem(skel->maps.maps_deny,
                                    &key, sizeof(key),
-                                   &(dummy), sizeof(dummy), BPF_NOEXIST);
+                                   &real_permission, sizeof(real_permission),
+                                   BPF_ANY);    // add this rule even if overwrite
     	if (err < 0) {
     	    printf("Add the pid and inode failed!\n");
     	}
