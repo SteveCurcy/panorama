@@ -50,7 +50,9 @@ int BPF_KRETPROBE(uretprobe_ssl_read, int ret)
 	if (!e)
 		return 0;
 
-	bpf_probe_read(e->content, 16384, data);
+	// 这里的 SSL_LEN_MASK 是为了确保 ret 不会导致数组越界
+	// 从而可以通过 eBPF 验证器
+	bpf_probe_read_user(e->content, ret & SSL_LEN_MASK, data);
 	e->from = 0;
 	e->size = ret;
 	bpf_ringbuf_submit(e, 0);
@@ -63,13 +65,12 @@ int BPF_KPROBE(uprobe_ssl_write, void *ssl, const void *buf, int num)
 	if (num <= 0) return 0;
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	bpf_map_update_elem(&tmp, &pid, &buf, BPF_ANY);
 
 	struct ssl_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct ssl_event), 0);
 	if (!e)
 		return 0;
 
-	bpf_probe_read_user(e->content, 16384, buf);
+	bpf_probe_read_user(e->content, num & SSL_LEN_MASK, buf);
 	e->from = 1;
 	e->size = num;
 	bpf_ringbuf_submit(e, 0);
@@ -78,7 +79,7 @@ int BPF_KPROBE(uprobe_ssl_write, void *ssl, const void *buf, int num)
 }
 
 SEC("uprobe")
-int BPF_KPROBE(uprobe_pr_recv, void *fd, const void* buf, int amount)
+int BPF_KPROBE(uprobe_pr_read, void *fd, const void* buf, int amount)
 {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_map_update_elem(&tmp, &pid, &buf, BPF_ANY);
@@ -87,7 +88,7 @@ int BPF_KPROBE(uprobe_pr_recv, void *fd, const void* buf, int amount)
 }
 
 SEC("uretprobe")
-int BPF_KRETPROBE(uretprobe_pr_recv, int ret)
+int BPF_KRETPROBE(uretprobe_pr_read, int ret)
 {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	const void ** buf = bpf_map_lookup_elem(&tmp, &pid);
@@ -108,7 +109,7 @@ int BPF_KRETPROBE(uretprobe_pr_recv, int ret)
 	if (!e)
 		return 0;
 
-	bpf_probe_read_user(e->content, 16384, data);
+	bpf_probe_read_user(e->content, ret & SSL_LEN_MASK, data);
 	e->from = 2;
 	e->size = ret;
 	bpf_ringbuf_submit(e, 0);
@@ -116,18 +117,17 @@ int BPF_KRETPROBE(uretprobe_pr_recv, int ret)
 }
 
 SEC("uprobe")
-int BPF_KPROBE(uprobe_pr_send, void *fd, const void* buf, int amount)
+int BPF_KPROBE(uprobe_pr_write, void *fd, const void* buf, int amount)
 {
 	if (amount <= 0) return 0;
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
-	bpf_map_update_elem(&tmp, &pid, &buf, BPF_ANY);
 
 	struct ssl_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct ssl_event), 0);
 	if (!e)
 		return 0;
 
-	bpf_probe_read_user(e->content, 16384, buf);
+	bpf_probe_read_user(e->content, amount & SSL_LEN_MASK, buf);
 	e->from = 3;
 	e->size = amount;
 	bpf_ringbuf_submit(e, 0);

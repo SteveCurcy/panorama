@@ -2,6 +2,7 @@
 /* Copyright (c) 2020 Facebook */
 #include <errno.h>
 #include <stdio.h>
+#include <string.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/resource.h>
@@ -9,30 +10,38 @@
 #include "ssl.h"
 #include "ssl.skel.h"
 
-typedef unsigned char   FMT_Byte;
-typedef size_t          FMT_Size;
-typedef size_t          FMT_Pos;
+typedef unsigned char FMT_Byte;
+typedef size_t FMT_Size;
+typedef size_t FMT_Pos;
 
-const char * const from[] = {"SSL_read", "SSL_write", "PR_Read", "PR_Write"};
+const char *const from[] = {"SSL_read", "SSL_write", "PR_Read", "PR_Write"};
 
-void display(const FMT_Byte * const content, const FMT_Size len) {
+void display(const FMT_Byte *const content, const FMT_Size len)
+{
 
-    FMT_Pos index = 0;
+	FMT_Pos index = 0;
 	FMT_Size tmp_size = 0;
-    while (index < len) {
-        if (!(index & 0xf)) {
+	while (index < len)
+	{
+		if (!(index & 0xf))
+		{
 			tmp_size = 8;
-			if (index > 0) {
-				for (int i = index - 16; i < index; i++) {
-					if (content[i] >= 32 && content[i] < 126) {
+			if (index > 0)
+			{
+				for (int i = index - 16; i < index; i++)
+				{
+					if (content[i] >= 32 && content[i] < 126)
+					{
 						printf("%c", content[i]);
-					} else {
+					}
+					else
+					{
 						printf(".");
 					}
 				}
 				printf("\n");
 			}
-			printf("%06d  ", index);
+			printf("%06ld  ", index);
 		}
 		printf("%02X", content[index]);
 		tmp_size += 2;
@@ -52,14 +61,19 @@ void display(const FMT_Byte * const content, const FMT_Size len) {
 			break;
 		}
 		index++;
-    }
+	}
 
 	FMT_Size rest = index & 0xf;
-	for (int i = 0; i < (52 - tmp_size); i++) printf(" ");
-	for (int i = index - rest; i < index; i++) {
-		if (content[i] >= 32 && content[i] < 126) {
+	for (int i = 0; i < (52 - tmp_size); i++)
+		printf(" ");
+	for (int i = index - rest; i < index; i++)
+	{
+		if (content[i] >= 32 && content[i] < 126)
+		{
 			printf("%c", content[i]);
-		} else {
+		}
+		else
+		{
 			printf(".");
 		}
 	}
@@ -74,7 +88,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	struct ssl_event *d = data;
-	printf("[INFO] Get Data From Func \"%s\"\n", from[d->from]);
+	printf("[INFO] Get Data %dB From Func \"%s\"\n", d->size, from[d->from]);
 	display(d->content, d->size);
 	return 0;
 }
@@ -93,19 +107,50 @@ int main(int argc, char **argv)
 	int err, i;
 	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 
+	/* 先查找库文件，如果找不到则不监控 */
+	FILE *fp;
+	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so.3 -type f", "find /usr/lib* /lib* -name libnspr4.so -type f"};
+	char lib_names[2][256] = {0};
+	for (int i = 0; i < 2; i++)
+	{
+		if ((fp = popen(cmds[i], "r")) == NULL)
+		{
+			perror("popen error");
+			return 1;
+		}
+		while (1)
+		{
+			if (fgets(lib_names[i], sizeof(lib_names[i]), fp) == NULL)
+				break;
+		}
+		size_t len = strlen(lib_names[i]);
+		if (len == 1 && lib_names[i][0] == '\n') {
+			printf("[ERROR] Cannot find the relative library!\n");
+			return 2;
+		}
+		lib_names[i][len - 1] = '\0';
+		if (pclose(fp) < 0)
+		{
+			perror("pclose error");
+			return 1;
+		}
+	}
+
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
 
 	/* Load and verify BPF application */
 	skel = ssl_bpf__open_and_load();
-	if (!skel) {
+	if (!skel)
+	{
 		fprintf(stderr, "Failed to open and load BPF skeleton\n");
 		return 1;
 	}
 
 	/* Set up ring buffer polling */
 	rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
-	if (!rb) {
+	if (!rb)
+	{
 		err = -1;
 		fprintf(stderr, "Failed to create ring buffer\n");
 		goto cleanup;
@@ -118,16 +163,23 @@ int main(int argc, char **argv)
 	/* Attach tracepoint handler */
 	uprobe_opts.func_name = "SSL_read";
 	uprobe_opts.retprobe = false;
-	/* uprobe/uretprobe expects relative offset of the function to attach
-	 * to. libbpf will automatically find the offset for us if we provide the
-	 * function name. If the function name is not specified, libbpf will try
-	 * to use the function offset instead.
-	 */
 	skel->links.uprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_read,
-								 -1 /* self pid */, "/usr/lib64/libssl.so.3",
-								 0 /* offset for function */,
-								 &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_ssl_read) {
+																  -1, lib_names[0],
+																  0, &uprobe_opts);
+	if (!skel->links.uprobe_ssl_read)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
+	uprobe_opts.func_name = "SSL_read";
+	uprobe_opts.retprobe = true;
+	skel->links.uretprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_ssl_read,
+																	 -1, lib_names[0],
+																	 0, &uprobe_opts);
+	if (!skel->links.uretprobe_ssl_read)
+	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
 		goto cleanup;
@@ -135,16 +187,11 @@ int main(int argc, char **argv)
 
 	uprobe_opts.func_name = "SSL_write";
 	uprobe_opts.retprobe = false;
-	/* uprobe/uretprobe expects relative offset of the function to attach
-	 * to. libbpf will automatically find the offset for us if we provide the
-	 * function name. If the function name is not specified, libbpf will try
-	 * to use the function offset instead.
-	 */
 	skel->links.uprobe_ssl_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_write,
-								 -1 /* self pid */, "/usr/lib64/libssl.so.3",
-								 0 /* offset for function */,
-								 &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_ssl_write) {
+																   -1, lib_names[0],
+																   0, &uprobe_opts);
+	if (!skel->links.uprobe_ssl_write)
+	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
 		goto cleanup;
@@ -152,16 +199,25 @@ int main(int argc, char **argv)
 
 	uprobe_opts.func_name = "PR_Read";
 	uprobe_opts.retprobe = false;
-	/* uprobe/uretprobe expects relative offset of the function to attach
-	 * to. libbpf will automatically find the offset for us if we provide the
-	 * function name. If the function name is not specified, libbpf will try
-	 * to use the function offset instead.
-	 */
-	skel->links.uprobe_pr_recv = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_recv,
-								 -1 /* self pid */, "/usr/lib64/libnspr4.so",
-								 0 /* offset for function */,
-								 &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_pr_recv) {
+	skel->links.uprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_read,
+																 -1 /* self pid */, lib_names[1],
+																 0 /* offset for function */,
+																 &uprobe_opts /* opts */);
+	if (!skel->links.uprobe_pr_read)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
+	uprobe_opts.func_name = "PR_Read";
+	uprobe_opts.retprobe = true;
+	skel->links.uretprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_pr_read,
+																	-1 /* self pid */, lib_names[1],
+																	0 /* offset for function */,
+																	&uprobe_opts /* opts */);
+	if (!skel->links.uretprobe_pr_read)
+	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
 		goto cleanup;
@@ -169,42 +225,12 @@ int main(int argc, char **argv)
 
 	uprobe_opts.func_name = "PR_Write";
 	uprobe_opts.retprobe = false;
-	/* uprobe/uretprobe expects relative offset of the function to attach
-	 * to. libbpf will automatically find the offset for us if we provide the
-	 * function name. If the function name is not specified, libbpf will try
-	 * to use the function offset instead.
-	 */
-	skel->links.uprobe_pr_send = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_send,
-								 -1 /* self pid */, "/usr/lib64/libnspr4.so",
-								 0 /* offset for function */,
-								 &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_pr_send) {
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
-
-	/* we can also attach uprobe/uretprobe to any existing or future
-	 * processes that use the same binary executable; to do that we need
-	 * to specify -1 as PID, as we do here
-	 */
-	uprobe_opts.func_name = "SSL_read";
-	uprobe_opts.retprobe = true;
-	skel->links.uretprobe_ssl_read = bpf_program__attach_uprobe_opts(
-		skel->progs.uretprobe_ssl_read, -1 /* self pid */, "/usr/lib64/libssl.so.3",
-		0 /* offset for function */, &uprobe_opts /* opts */);
-	if (!skel->links.uretprobe_ssl_read) {
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
-
-	uprobe_opts.func_name = "PR_Read";
-	uprobe_opts.retprobe = true;
-	skel->links.uretprobe_pr_recv = bpf_program__attach_uprobe_opts(
-		skel->progs.uretprobe_pr_recv, -1 /* self pid */, "/usr/lib64/libnspr4.so",
-		0 /* offset for function */, &uprobe_opts /* opts */);
-	if (!skel->links.uretprobe_pr_recv) {
+	skel->links.uprobe_pr_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_write,
+																  -1 /* self pid */, lib_names[1],
+																  0 /* offset for function */,
+																  &uprobe_opts /* opts */);
+	if (!skel->links.uprobe_pr_write)
+	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
 		goto cleanup;
@@ -214,21 +240,25 @@ int main(int argc, char **argv)
 	 * NOTICE: we provide path and symbol info in SEC for BPF programs
 	 */
 	err = ssl_bpf__attach(skel);
-	if (err) {
+	if (err)
+	{
 		fprintf(stderr, "Failed to auto-attach BPF skeleton: %d\n", err);
 		goto cleanup;
 	}
 
 	printf("Successfully started!\n\n");
 
-	while (!exiting) {
+	while (!exiting)
+	{
 		err = ring_buffer__poll(rb, 100 /* timeout, ms */);
 		/* Ctrl-C will cause -EINTR */
-		if (err == -EINTR) {
+		if (err == -EINTR)
+		{
 			err = 0;
 			break;
 		}
-		if (err < 0) {
+		if (err < 0)
+		{
 			fprintf(stderr, "Error polling perf buffer: %d\n", err);
 			break;
 		}
