@@ -109,7 +109,7 @@ int main(int argc, char **argv)
 
 	/* 先查找库文件，如果找不到则不监控 */
 	FILE *fp;
-	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so.3 -type f", "find /usr/lib* /lib* -name libnspr4.so -type f"};
+	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so.3", "find /usr/lib* /lib* -name libnspr4.so"};
 	char lib_names[2][256] = {0};
 	for (int i = 0; i < 2; i++)
 	{
