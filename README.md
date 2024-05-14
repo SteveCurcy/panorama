@@ -31,6 +31,13 @@ apt install clang libelf1 libelf-dev zlib1g-dev cmake
 dnf install clang elfutils-libelf elfutils-libelf-devel zlib-devel cmake
 ```
 
+在 openSUSE 上，请执行：
+
+```shell
+zypper install -y git gcc ncurses-devel libelf-devel bc libopenssl-devel \
+libcap-devel clang llvm graphviz bison flex glibc-devel-static
+```
+
 ### 项目构建
 
 我们推荐在部署编译的时候创建一个单独的路径，如 build。然后执行对应的编译构建命令。本项目的所有源代码都放置在 src 目录下，主要包括 genor 行为模式采集、sttGenor 自动机规则生成工具和 panorama 系统监控工具。
