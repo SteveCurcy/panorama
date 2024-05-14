@@ -1,5 +1,35 @@
 // SPDX-License-Identifier: (LGPL-2.1 OR BSD-2-Clause)
 /* Copyright (c) 2020 Facebook */
+/**
+ * The libssl.so* of openssl will be used as follows:
+ * 
+ * +----------+							+----------+
+ * |  Client  |							|  Server  |
+ * +----------+							+----------+
+ * 		|								      |
+ * 		|-------[ client_fd=connect() ]------>|  +----------+
+ * 		|<------[ server_fd=accept()  ]-------|	-| syscalls |
+ * 		|									  |	 +----------+
+ *     [         SSL sub-process begin         ]
+ * 		|									  |
+ * 		|----[ Client initialize SSL env ]--->|		 +-------------------------------+
+ * 		|<---[ Server initialize SSL env ]----|------| SSL_library_init();			 |
+ * 		|									  |      | OpenSSL_add_all_algorithms(); |
+ * 		|									  |      | SSL_load_error_strings();	 |
+ * 		|----[ Client Create SSL session ]--->|		 +-------------------------------+
+ * 		|<---[ Server Create SSL session ]----|\    +--------------------------------+
+ * 		|									  | `---| SSL_CTX_new(method);			 |
+ * 		|									  |     | SSL_CTX_use_certificate_file.. |
+ * 		|									  |		| SSL_new(ctx), SSL_set_fd...	 |
+ * 		|--[ SSL_connect() for shake hands ]->|		+--------------------------------+
+ * 		|<-[ SSL_accept() for shake hands  ]--|
+ * 		|									  |
+ * 	   [         SSL sub-process ends          ]
+ * 		|									  |
+ * 		|--------[ SSL_write(data) ]--------->|
+ * 		|<-------[ SSL_read(data)  ]----------|
+ * 		|-------------[ ...... ]--------------|
+ */
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
@@ -88,7 +118,13 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	struct ssl_event *d = data;
-	printf("[INFO] Get Data %dB From Func \"%s\"\n", d->size, from[d->from]);
+	unsigned char *from_ips = (unsigned char *) &(d->sock.from_ip);
+	unsigned char *to_ips = (unsigned char *) &(d->sock.to_ip);
+	if (d->from == 1) {
+		printf("[INFO] Send Data %dB \033[32m%u.%u.%u.%u:%u\033[0m -> \033[33m%u.%u.%u.%u:%u\033[0m\n", d->size, from_ips[3], from_ips[2], from_ips[1], from_ips[0], d->sock.from_port, to_ips[3], to_ips[2], to_ips[1], to_ips[0], d->sock.to_port);
+	} else {
+		printf("[INFO] Receive Data %dB \033[33m%u.%u.%u.%u:%u\033[0m -> \033[32m%u.%u.%u.%u:%u\033[0m\n", d->size, to_ips[3], to_ips[2], to_ips[1], to_ips[0], d->sock.to_port, from_ips[3], from_ips[2], from_ips[1], from_ips[0], d->sock.from_port);
+	}
 	display(d->content, d->size);
 	return 0;
 }
@@ -109,7 +145,7 @@ int main(int argc, char **argv)
 
 	/* 先查找库文件，如果找不到则不监控 */
 	FILE *fp;
-	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so.3", "find /usr/lib* /lib* -name libnspr4.so"};
+	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so*", "find /usr/lib* /lib* -name libnspr4.so"};
 	char lib_names[2][256] = {0};
 	for (int i = 0; i < 2; i++)
 	{
@@ -191,6 +227,18 @@ int main(int argc, char **argv)
 																   -1, lib_names[0],
 																   0, &uprobe_opts);
 	if (!skel->links.uprobe_ssl_write)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
+	uprobe_opts.func_name = "SSL_set_fd";
+	uprobe_opts.retprobe = false;
+	skel->links.uprobe_ssl_set_fd = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_set_fd,
+																   -1, lib_names[0],
+																   0, &uprobe_opts);
+	if (!skel->links.uprobe_ssl_set_fd)
 	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
