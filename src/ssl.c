@@ -28,7 +28,10 @@
  * 		|									  |
  * 		|--------[ SSL_write(data) ]--------->|
  * 		|<-------[ SSL_read(data)  ]----------|
- * 		|-------------[ ...... ]--------------|
+ * 		|----------[ SSL_shutdown ]---------->|
+ * 		|<---------[ SSL_shutdown ]-----------|
+ * 		|--------------[ close ]------------->|
+ * 		|<-------------[ close ]--------------|
  */
 #include <errno.h>
 #include <stdio.h>
@@ -118,13 +121,9 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 static int handle_event(void *ctx, void *data, size_t data_sz)
 {
 	struct ssl_event *d = data;
-	unsigned char *from_ips = (unsigned char *) &(d->sock.from_ip);
-	unsigned char *to_ips = (unsigned char *) &(d->sock.to_ip);
-	if (d->from == 1) {
-		printf("[INFO] Send Data %dB \033[32m%u.%u.%u.%u:%u\033[0m -> \033[33m%u.%u.%u.%u:%u\033[0m\n", d->size, from_ips[3], from_ips[2], from_ips[1], from_ips[0], d->sock.from_port, to_ips[3], to_ips[2], to_ips[1], to_ips[0], d->sock.to_port);
-	} else {
-		printf("[INFO] Receive Data %dB \033[33m%u.%u.%u.%u:%u\033[0m -> \033[32m%u.%u.%u.%u:%u\033[0m\n", d->size, to_ips[3], to_ips[2], to_ips[1], to_ips[0], d->sock.to_port, from_ips[3], from_ips[2], from_ips[1], from_ips[0], d->sock.from_port);
-	}
+	unsigned char *local_ips = (unsigned char *) &(d->sock.local_ip);
+	unsigned char *remote_ips = (unsigned char *) &(d->sock.remote_ip);
+	printf("[INFO] \033[32m%u.%u.%u.%u:%u\033[0m %s \033[33m%u.%u.%u.%u:%u\033[0m \033[34m%dB\033[0m\n", local_ips[3], local_ips[2], local_ips[1], local_ips[0], d->sock.local_port, d->from ? "\033[32m=>\033[0m" : "\033[33m<=\033[0m", remote_ips[3], remote_ips[2], remote_ips[1], remote_ips[0], d->sock.remote_port, d->size);
 	display(d->content, d->size);
 	return 0;
 }
@@ -239,6 +238,18 @@ int main(int argc, char **argv)
 																   -1, lib_names[0],
 																   0, &uprobe_opts);
 	if (!skel->links.uprobe_ssl_set_fd)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
+	uprobe_opts.func_name = "SSL_shutdown";
+	uprobe_opts.retprobe = false;
+	skel->links.uprobe_ssl_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_shutdown,
+																   -1, lib_names[0],
+																   0, &uprobe_opts);
+	if (!skel->links.uprobe_ssl_shutdown)
 	{
 		err = -errno;
 		fprintf(stderr, "Failed to attach uprobe: %d\n", err);

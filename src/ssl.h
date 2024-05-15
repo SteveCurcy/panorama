@@ -2,10 +2,10 @@
 #define SSL_LEN_MASK    16383
 
 struct ssl_socket {
-    __u32 from_ip;
-    __u32 to_ip;
-    __u16 from_port;
-    __u16 to_port;
+    __u32 local_ip;
+    __u32 remote_ip;
+    __u16 local_port;
+    __u16 remote_port;
 };
 
 struct ssl_event {
