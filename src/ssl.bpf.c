@@ -329,9 +329,8 @@ int BPF_KPROBE(uprobe_pr_connect, void *fd, const struct ssl_pr_inet *addr, int 
 
 	struct ssl_socket remote;
 	__builtin_memset(&remote, 0, sizeof(remote));
-	remote.local_ip = remote.local_port = 0;
-	remote.remote_ip = addr->ip;
-	remote.remote_port = addr->port;
+	bpf_probe_read_user(&(remote.remote_ip), sizeof(__u32), &(addr->ip));
+	bpf_probe_read_user(&(remote.remote_port), sizeof(__u16), &(addr->port));
 	bpf_map_update_elem(&tmp_ssl_sock, &fd, &remote, BPF_ANY);
 
 	return 0;
