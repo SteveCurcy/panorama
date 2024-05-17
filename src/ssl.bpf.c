@@ -323,10 +323,33 @@ int BPF_KPROBE(uprobe_ssl_shutdown, void *ssl)
 // <<<<<<<<<<<<<<<<<<<< End of libssl.so* <<<<<<<<<<<<<<<<<<<<<
 
 SEC("uprobe")
+int BPF_KPROBE(uprobe_pr_connect, void *fd, const struct ssl_pr_inet *addr, int timeout)
+{
+	pid_t pid = bpf_get_current_pid_tgid() >> 32;
+
+	struct ssl_socket remote;
+	__builtin_memset(&remote, 0, sizeof(remote));
+	remote.local_ip = remote.local_port = 0;
+	remote.remote_ip = addr->ip;
+	remote.remote_port = addr->port;
+	bpf_map_update_elem(&tmp_ssl_sock, &fd, &remote, BPF_ANY);
+
+	return 0;
+}
+
+SEC("uprobe")
+int BPF_KPROBE(uprobe_pr_shutdown, void *fd, int how)
+{
+	bpf_map_delete_elem(&tmp_ssl_sock, &fd);
+	return 0;
+}
+
+SEC("uprobe")
 int BPF_KPROBE(uprobe_pr_read, void *fd, const void *buf, int amount)
 {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	bpf_map_update_elem(&tmp_buf, &pid, &buf, BPF_ANY);
+	bpf_map_update_elem(&tmp_ssl, &pid, &fd, BPF_ANY);
 
 	return 0;
 }
@@ -336,30 +359,18 @@ int BPF_KRETPROBE(uretprobe_pr_read, int ret)
 {
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 	const void **buf = bpf_map_lookup_elem(&tmp_buf, &pid);
-	if (!buf)
-	{
-		return 0;
-	}
-	const char *data = *buf;
-	if (!data)
-	{
-		return 0;
-	}
+	const void **fd = bpf_map_lookup_elem(&tmp_ssl, &pid);
 
 	bpf_map_delete_elem(&tmp_buf, &pid);
-	if (ret <= 0)
+	bpf_map_delete_elem(&tmp_ssl, &pid);
+
+	if (!buf || !fd || ret <= 0)
 	{
 		return 0;
 	}
+	
+	ssl_submit_packet(pid, fd, buf, ret, 0);
 
-	struct ssl_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct ssl_event), 0);
-	if (!e)
-		return 0;
-
-	bpf_probe_read_user(e->content, ret & SSL_LEN_MASK, data);
-	e->from = 2;
-	e->size = ret;
-	bpf_ringbuf_submit(e, 0);
 	return 0;
 }
 
@@ -371,14 +382,7 @@ int BPF_KPROBE(uprobe_pr_write, void *fd, const void *buf, int amount)
 
 	pid_t pid = bpf_get_current_pid_tgid() >> 32;
 
-	struct ssl_event *e = bpf_ringbuf_reserve(&rb, sizeof(struct ssl_event), 0);
-	if (!e)
-		return 0;
-
-	bpf_probe_read_user(e->content, amount & SSL_LEN_MASK, buf);
-	e->from = 3;
-	e->size = amount;
-	bpf_ringbuf_submit(e, 0);
+	ssl_submit_packet(pid, &fd, &buf, amount, 1);
 
 	return 0;
 }

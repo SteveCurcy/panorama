@@ -256,6 +256,30 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+	uprobe_opts.func_name = "PR_Connect";
+	uprobe_opts.retprobe = false;
+	skel->links.uprobe_pr_connect = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_connect,
+																   -1, lib_names[1],
+																   0, &uprobe_opts);
+	if (!skel->links.uprobe_pr_connect)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
+	uprobe_opts.func_name = "PR_Shutdown";
+	uprobe_opts.retprobe = false;
+	skel->links.uprobe_pr_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_shutdown,
+																   -1, lib_names[1],
+																   0, &uprobe_opts);
+	if (!skel->links.uprobe_pr_shutdown)
+	{
+		err = -errno;
+		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+		goto cleanup;
+	}
+
 	uprobe_opts.func_name = "PR_Read";
 	uprobe_opts.retprobe = false;
 	skel->links.uprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_read,
