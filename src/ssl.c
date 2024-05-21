@@ -135,6 +135,8 @@ static void sig_handler(int sig)
 	exiting = true;
 }
 
+#define LIB_CNT 2
+
 int main(int argc, char **argv)
 {
 	struct ring_buffer *rb = NULL;
@@ -143,10 +145,12 @@ int main(int argc, char **argv)
 	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 
 	/* 先查找库文件，如果找不到则不监控 */
+    /* 每个库可能存在多个副本，对所有链接库都 attach */
 	FILE *fp;
 	const char *const cmds[] = {"find /usr/lib* /lib* -name libssl.so*", "find /usr/lib* /lib* -name libnspr4.so"};
-	char lib_names[2][256] = {0};
-	for (int i = 0; i < 2; i++)
+    int lib_copy_cnt[LIB_CNT] = {0};
+	char lib_names[LIB_CNT][3][256] = {0};
+	for (int i = 0; i < LIB_CNT; i++)
 	{
 		if ((fp = popen(cmds[i], "r")) == NULL)
 		{
@@ -155,15 +159,17 @@ int main(int argc, char **argv)
 		}
 		while (1)
 		{
-			if (fgets(lib_names[i], sizeof(lib_names[i]), fp) == NULL)
+			if (lib_copy_cnt[i] >= 3 || fgets(lib_names[i][lib_copy_cnt[i]], 256, fp) == NULL)
 				break;
+            size_t len = strlen(lib_names[i][lib_copy_cnt[i]]);
+            if (len <= 3) {
+                printf("[ERROR] Cannot find the relative library!\n");
+                pclose(fp);
+                return 2;
+            }
+            lib_names[i][lib_copy_cnt[i]][len - 1] = '\0';
+            lib_copy_cnt[i]++;
 		}
-		size_t len = strlen(lib_names[i]);
-		if (len == 1 && lib_names[i][0] == '\n') {
-			printf("[ERROR] Cannot find the relative library!\n");
-			return 2;
-		}
-		lib_names[i][len - 1] = '\0';
 		if (pclose(fp) < 0)
 		{
 			perror("pclose error");
@@ -196,128 +202,136 @@ int main(int argc, char **argv)
 	signal(SIGTERM, sig_handler);
 
 	/* Attach tracepoint handler */
-	uprobe_opts.func_name = "SSL_read";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_read,
-																  -1, lib_names[0],
-																  0, &uprobe_opts);
-	if (!skel->links.uprobe_ssl_read)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+    /* Attach for libssl.so* */
+    for (int i = 0; i < lib_copy_cnt[0]; i++)
+    {
+        uprobe_opts.func_name = "SSL_read";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_read,
+                                                                    -1, lib_names[0][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_ssl_read)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "SSL_read";
-	uprobe_opts.retprobe = true;
-	skel->links.uretprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_ssl_read,
-																	 -1, lib_names[0],
-																	 0, &uprobe_opts);
-	if (!skel->links.uretprobe_ssl_read)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "SSL_read";
+        uprobe_opts.retprobe = true;
+        skel->links.uretprobe_ssl_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_ssl_read,
+                                                                        -1, lib_names[0][i],
+                                                                        0, &uprobe_opts);
+        if (!skel->links.uretprobe_ssl_read)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "SSL_write";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_ssl_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_write,
-																   -1, lib_names[0],
-																   0, &uprobe_opts);
-	if (!skel->links.uprobe_ssl_write)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "SSL_write";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_ssl_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_write,
+                                                                    -1, lib_names[0][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_ssl_write)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "SSL_set_fd";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_ssl_set_fd = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_set_fd,
-																   -1, lib_names[0],
-																   0, &uprobe_opts);
-	if (!skel->links.uprobe_ssl_set_fd)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "SSL_set_fd";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_ssl_set_fd = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_set_fd,
+                                                                    -1, lib_names[0][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_ssl_set_fd)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "SSL_shutdown";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_ssl_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_shutdown,
-																   -1, lib_names[0],
-																   0, &uprobe_opts);
-	if (!skel->links.uprobe_ssl_shutdown)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "SSL_shutdown";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_ssl_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_ssl_shutdown,
+                                                                    -1, lib_names[0][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_ssl_shutdown)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
+    }
 
-	uprobe_opts.func_name = "PR_Connect";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_pr_connect = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_connect,
-																   -1, lib_names[1],
-																   0, &uprobe_opts);
-	if (!skel->links.uprobe_pr_connect)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+    /* Attach for libnspr4.so */
+    for (int i = 0; i < lib_copy_cnt[1]; i++)
+    {
+        uprobe_opts.func_name = "PR_Connect";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_pr_connect = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_connect,
+                                                                    -1, lib_names[1][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_pr_connect)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "PR_Shutdown";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_pr_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_shutdown,
-																   -1, lib_names[1],
-																   0, &uprobe_opts);
-	if (!skel->links.uprobe_pr_shutdown)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "PR_Shutdown";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_pr_shutdown = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_shutdown,
+                                                                    -1, lib_names[1][i],
+                                                                    0, &uprobe_opts);
+        if (!skel->links.uprobe_pr_shutdown)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "PR_Read";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_read,
-																 -1 /* self pid */, lib_names[1],
-																 0 /* offset for function */,
-																 &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_pr_read)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "PR_Read";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_read,
+                                                                    -1 /* self pid */, lib_names[1][i],
+                                                                    0 /* offset for function */,
+                                                                    &uprobe_opts /* opts */);
+        if (!skel->links.uprobe_pr_read)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "PR_Read";
-	uprobe_opts.retprobe = true;
-	skel->links.uretprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_pr_read,
-																	-1 /* self pid */, lib_names[1],
-																	0 /* offset for function */,
-																	&uprobe_opts /* opts */);
-	if (!skel->links.uretprobe_pr_read)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "PR_Read";
+        uprobe_opts.retprobe = true;
+        skel->links.uretprobe_pr_read = bpf_program__attach_uprobe_opts(skel->progs.uretprobe_pr_read,
+                                                                        -1 /* self pid */, lib_names[1][i],
+                                                                        0 /* offset for function */,
+                                                                        &uprobe_opts /* opts */);
+        if (!skel->links.uretprobe_pr_read)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
 
-	uprobe_opts.func_name = "PR_Write";
-	uprobe_opts.retprobe = false;
-	skel->links.uprobe_pr_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_write,
-																  -1 /* self pid */, lib_names[1],
-																  0 /* offset for function */,
-																  &uprobe_opts /* opts */);
-	if (!skel->links.uprobe_pr_write)
-	{
-		err = -errno;
-		fprintf(stderr, "Failed to attach uprobe: %d\n", err);
-		goto cleanup;
-	}
+        uprobe_opts.func_name = "PR_Write";
+        uprobe_opts.retprobe = false;
+        skel->links.uprobe_pr_write = bpf_program__attach_uprobe_opts(skel->progs.uprobe_pr_write,
+                                                                    -1 /* self pid */, lib_names[1][i],
+                                                                    0 /* offset for function */,
+                                                                    &uprobe_opts /* opts */);
+        if (!skel->links.uprobe_pr_write)
+        {
+            err = -errno;
+            fprintf(stderr, "Failed to attach uprobe: %d\n", err);
+            goto cleanup;
+        }
+    }
 
 	/* Let libbpf perform auto-attach for uprobe_sub/uretprobe_sub
 	 * NOTICE: we provide path and symbol info in SEC for BPF programs
